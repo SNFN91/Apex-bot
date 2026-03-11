@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>APEX BOT — Binance Testnet</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet"/>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#080c14;color:#e2e8f0;font-family:'JetBrains Mono',monospace;min-height:100vh}
+  ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#1e2d45;border-radius:2px}
+  .btn{cursor:pointer;border:none;border-radius:8px;font-family:inherit;font-weight:700;letter-spacing:.06em;transition:all .15s;display:inline-flex;align-items:center;gap:6px}
+  .btn:hover{filter:brightness(1.15);transform:translateY(-1px)}
+  .btn:active{transform:translateY(0)}
+  .btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
+  .card{background:#0d1421;border:1px solid #1e2d45;border-radius:10px}
+  .tab{cursor:pointer;padding:7px 15px;border-radius:6px;font-size:11px;letter-spacing:.08em;font-weight:700;transition:all .15s}
+  .tab.active{background:#f0b90b;color:#000}
+  .tab:not(.active){color:#334155}
+  .tab:not(.active):hover{color:#94a3b8}
+  input{background:#0d1421;border:1px solid #1e2d45;color:#e2e8f0;border-radius:8px;padding:12px 16px;font-family:inherit;font-size:13px;outline:none;width:100%;transition:border .2s}
+  input:focus{border-color:#f0b90b}
+  .fade-in{animation:fi .4s ease}
+  @keyframes fi{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+  .slide{animation:sl .2s ease}
+  @keyframes sl{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .pulse{animation:pulse 2s infinite}
+  table{width:100%;border-collapse:collapse;font-size:11px}
+  th{padding:9px 14px;text-align:left;color:#1e2d45;font-weight:700;letter-spacing:.08em;font-size:10px;background:#080c14}
+  td{padding:9px 14px}
+  tr:nth-child(even){background:#0a0f1a}
+  .badge{padding:2px 8px;border-radius:3px;font-size:10px;font-weight:700}
+  .badge-buy{background:rgba(34,197,94,.12);color:#22c55e}
+  .badge-sell{background:rgba(239,68,68,.12);color:#ef4444}
+  .badge-open{background:rgba(240,185,11,.15);color:#f0b90b;font-size:8px;letter-spacing:.1em}
+  #connect-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+  #dashboard-screen{display:none;padding:14px 22px;max-width:1200px;margin:0 auto}
+  .header{background:#0a0f1a;border-bottom:1px solid #1e2d45;padding:11px 22px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+  .stats-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px}
+  .coins-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+  @media(min-width:768px){.coins-grid{grid-template-columns:repeat(4,1fr)}}
+  .rsi-bar{height:3px;background:#1e2d45;border-radius:2px;overflow:hidden;margin-bottom:10px}
+  .rsi-fill{height:100%;border-radius:2px;transition:width .6s}
+  .pos-box{background:#080c14;border-radius:6px;padding:8px 10px;font-size:10px;margin-bottom:10px}
+  .pos-row{display:flex;justify-content:space-between;margin-bottom:3px}
+  .log-entry{display:flex;gap:10px;margin-bottom:5px;font-size:11px}
+  .error-box{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);border-radius:8px;padding:10px 14px;font-size:11px;color:#ef4444;margin-bottom:16px}
+  .footer{margin-top:12px;padding:9px 14px;background:#0a0f1a;border-radius:8px;border:1px solid #1e2d45;font-size:10px;color:#1e2d45;display:flex;gap:18px;flex-wrap:wrap;align-items:center}
+  .sym-tab{cursor:pointer;padding:6px 13px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.05em;transition:all .15s;border:1px solid transparent}
+  .sym-tab.active{border-color:#f0b90b;color:#f0b90b;background:rgba(240,185,11,.08)}
+  .sym-tab:not(.active){color:#334155}
+  .sym-tab:not(.active):hover{color:#64748b}
+</style>
+</head>
+<body>
+
+<!-- ═══ CONNECT SCREEN ═══════════════════════════════════════════════════════ -->
+<div id="connect-screen">
+  <div class="fade-in" style="width:100%;max-width:440px">
+    <div style="text-align:center;margin-bottom:36px">
+      <div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#f0b90b,#f57c00);display:flex;align-items:center;justify-content:center;font-size:26px;margin:0 auto 14px">⚡</div>
+      <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:26px;color:#f8fafc;letter-spacing:.04em">APEX BOT</div>
+      <div style="font-size:11px;color:#334155;letter-spacing:.18em;margin-top:4px">BINANCE SPOT TESTNET</div>
+    </div>
+    <div class="card" style="padding:28px">
+      <div style="font-size:11px;color:#f0b90b;letter-spacing:.12em;font-weight:700;margin-bottom:20px">🔑 ENTER YOUR TESTNET API KEYS</div>
+      <div style="margin-bottom:14px">
+        <div style="font-size:10px;color:#334155;letter-spacing:.1em;margin-bottom:6px">API KEY</div>
+        <input type="text" id="apiKey" placeholder="Paste your Testnet API Key..."/>
+      </div>
+      <div style="margin-bottom:20px">
+        <div style="font-size:10px;color:#334155;letter-spacing:.1em;margin-bottom:6px">SECRET KEY</div>
+        <input type="password" id="apiSecret" placeholder="Paste your Testnet Secret Key..."/>
+      </div>
+      <div id="connectError" class="error-box" style="display:none"></div>
+      <button class="btn" id="connectBtn" onclick="handleConnect()" style="width:100%;padding:13px 0;background:linear-gradient(135deg,#f0b90b,#f57c00);color:#000;font-size:13px;letter-spacing:.08em;justify-content:center">
+        ⚡ CONNECT TO BINANCE TESTNET
+      </button>
+      <div style="margin-top:16px;padding:12px 14px;background:#080c14;border-radius:8px;font-size:10px;color:#334155;line-height:1.8">
+        💡 Get your free keys at <span style="color:#f0b90b">testnet.binance.vision</span><br/>
+        🔒 Keys stay in your browser only — never sent anywhere<br/>
+        🎮 Testnet = fake money, real Binance market prices
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ DASHBOARD ════════════════════════════════════════════════════════════ -->
+<div id="dashboard-screen" style="display:none">
+  <!-- Header -->
+  <div class="header">
+    <div style="display:flex;align-items:center;gap:10px">
+      <div style="width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#f0b90b,#f57c00);display:flex;align-items:center;justify-content:center;font-size:14px">⚡</div>
+      <div>
+        <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:14px;color:#f8fafc;letter-spacing:.06em">APEX BOT</div>
+        <div style="font-size:9px;color:#1e2d45;letter-spacing:.14em">BINANCE SPOT TESTNET</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px">
+      <div style="font-size:11px;color:#334155">USDT: <span id="headerBalance" style="color:#f0b90b;font-weight:700">—</span></div>
+      <div style="display:flex;align-items:center;gap:5px;font-size:11px">
+        <div id="statusDot" style="width:6px;height:6px;border-radius:50%;background:#22c55e"></div>
+        <span id="statusText" style="color:#64748b">CONNECTED</span>
+      </div>
+      <div style="font-size:9px;color:#1e2d45;background:#0d1421;padding:3px 9px;border-radius:4px;border:1px solid #1e2d45">TESTNET</div>
+    </div>
+  </div>
+
+  <div id="dashboard-body" style="padding:14px 22px;max-width:1200px;margin:0 auto">
+    <!-- Controls -->
+    <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap">
+      <button class="btn" id="startBtn" onclick="handleStart()" style="padding:9px 22px;background:linear-gradient(135deg,#f0b90b,#f57c00);color:#000;font-size:12px">▶ START BOT</button>
+      <button class="btn" onclick="fetchMarketData()" style="padding:9px 16px;background:#0d1421;color:#64748b;font-size:11px;border:1px solid #1e2d45">↻ REFRESH</button>
+      <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
+        <div class="tab active" onclick="switchTab('dashboard')" id="tab-dashboard">DASHBOARD</div>
+        <div class="tab" onclick="switchTab('charts')" id="tab-charts">CHARTS</div>
+        <div class="tab" onclick="switchTab('trades')" id="tab-trades">TRADES</div>
+        <div class="tab" onclick="switchTab('log')" id="tab-log">LOG</div>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-grid" id="statsGrid">
+      <div class="card" style="padding:12px 15px"><div style="font-size:9px;color:#1e2d45;letter-spacing:.14em;margin-bottom:4px">TESTNET USDT</div><div id="statBalance" style="font-size:17px;font-weight:700;color:#f0b90b;font-family:'Syne',sans-serif">—</div></div>
+      <div class="card" style="padding:12px 15px"><div style="font-size:9px;color:#1e2d45;letter-spacing:.14em;margin-bottom:4px">EXPOSURE</div><div id="statExposure" style="font-size:17px;font-weight:700;color:#94a3b8;font-family:'Syne',sans-serif">$0.00</div></div>
+      <div class="card" style="padding:12px 15px"><div style="font-size:9px;color:#1e2d45;letter-spacing:.14em;margin-bottom:4px">REALIZED P&L</div><div id="statPnl" style="font-size:17px;font-weight:700;color:#94a3b8;font-family:'Syne',sans-serif">$0.00</div></div>
+      <div class="card" style="padding:12px 15px"><div style="font-size:9px;color:#1e2d45;letter-spacing:.14em;margin-bottom:4px">WIN RATE</div><div id="statWinRate" style="font-size:17px;font-weight:700;color:#60a5fa;font-family:'Syne',sans-serif">—</div><div id="statWL" style="font-size:10px;color:#334155;margin-top:3px">0W / 0L</div></div>
+      <div class="card" style="padding:12px 15px"><div style="font-size:9px;color:#1e2d45;letter-spacing:.14em;margin-bottom:4px">OPEN POSITIONS</div><div id="statPositions" style="font-size:17px;font-weight:700;color:#a78bfa;font-family:'Syne',sans-serif">0</div></div>
+    </div>
+
+    <!-- Dashboard Tab -->
+    <div id="panel-dashboard">
+      <div class="coins-grid" id="coinsGrid"></div>
+    </div>
+
+    <!-- Charts Tab -->
+    <div id="panel-charts" style="display:none">
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap" id="chartSymTabs"></div>
+      <div class="card" style="height:500px;overflow:hidden" id="tvChartContainer"></div>
+      <div style="margin-top:10px;padding:9px 14px;background:#0a0f1a;border-radius:8px;border:1px solid #1e2d45;font-size:10px;color:#334155;display:flex;align-items:center;gap:8px">
+        <span style="color:#2962ff;font-weight:700;font-size:12px">TV</span>
+        Live TradingView chart — same data your TradingView mobile app shows • RSI(14) included
+      </div>
+    </div>
+
+    <!-- Trades Tab -->
+    <div id="panel-trades" style="display:none">
+      <div class="card" style="overflow:hidden">
+        <div style="padding:11px 15px;border-bottom:1px solid #1e2d45;font-family:'Syne',sans-serif;font-weight:700;font-size:11px;color:#f0b90b;letter-spacing:.1em">TESTNET ORDER HISTORY</div>
+        <div style="max-height:440px;overflow-y:auto">
+          <table><thead><tr><th>TIME</th><th>PAIR</th><th>SIDE</th><th>PRICE</th><th>QTY</th><th>P&L</th><th>REASON</th></tr></thead>
+          <tbody id="tradesBody"><tr><td colspan="7" style="text-align:center;color:#1e2d45;padding:28px">No orders yet — start the bot</td></tr></tbody></table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Log Tab -->
+    <div id="panel-log" style="display:none">
+      <div class="card" style="overflow:hidden">
+        <div style="padding:11px 15px;border-bottom:1px solid #1e2d45;font-family:'Syne',sans-serif;font-weight:700;font-size:11px;color:#f0b90b;letter-spacing:.1em">BOT ACTIVITY LOG</div>
+        <div style="max-height:440px;overflow-y:auto;padding:14px" id="logBody">
+          <div style="color:#1e2d45;font-size:12px">No activity yet...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <span>📐 RSI(14) on 15m candles</span>
+      <span>📉 Buy: RSI &lt; 32</span>
+      <span>🛑 Stop Loss: 2%</span>
+      <span>✅ Take Profit: 3.5%</span>
+      <span>⏱ Scans every 15s</span>
+      <span style="margin-left:auto;color:#f0b90b">🟡 Binance Spot Testnet — No real funds</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══ CONFIG ══════════════════════════════════════════════════════════════════
+const TESTNET = "https://testnet.binance.vision/api";
+const STOP_LOSS = 0.02;
+const TAKE_PROFIT = 0.035;
+const RSI_PERIOD = 14;
+const RSI_OVERSOLD = 32;
+const TRADE_QTY = { BTCUSDT: 0.001, ETHUSDT: 0.01, BNBUSDT: 0.1, SOLUSDT: 0.5 };
+const SYMBOLS = [
+  { pair: "BTC/USDT", symbol: "BTCUSDT", tv: "BINANCE:BTCUSDT", color: "#f7931a" },
+  { pair: "ETH/USDT", symbol: "ETHUSDT", tv: "BINANCE:ETHUSDT", color: "#627eea" },
+  { pair: "BNB/USDT", symbol: "BNBUSDT", tv: "BINANCE:BNBUSDT", color: "#f3ba2f" },
+  { pair: "SOL/USDT", symbol: "SOLUSDT", tv: "BINANCE:SOLUSDT", color: "#9945ff" },
+];
+
+// ═══ STATE ═══════════════════════════════════════════════════════════════════
+let API_KEY = "", API_SECRET = "";
+let running = false, botInterval = null;
+let prices = {}, rsiValues = {}, positions = {}, trades = [];
+let totalPnl = 0, wins = 0, losses = 0;
+let activeChart = "BINANCE:BTCUSDT";
+let tvWidget = null;
+
+// ═══ CRYPTO: HMAC-SHA256 ══════════════════════════════════════════════════════
+async function sign(queryString) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(API_SECRET), { name:"HMAC", hash:"SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(queryString));
+  return Array.from(new Uint8Array(sig)).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+
+async function binanceCall(path, params={}, method="GET") {
+  const qs = Object.entries({...params, timestamp: Date.now()}).map(([k,v])=>`${k}=${v}`).join("&");
+  const signature = await sign(qs);
+  const url = `${TESTNET}${path}?${qs}&signature=${signature}`;
+  const res = await fetch(url, { method, headers:{"X-MBX-APIKEY": API_KEY} });
+  if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.msg||`HTTP ${res.status}`); }
+  return res.json();
+}
+
+async function getPrice(symbol) {
+  const r = await fetch(`${TESTNET}/v3/ticker/price?symbol=${symbol}`);
+  return parseFloat((await r.json()).price);
+}
+
+async function getKlines(symbol) {
+  const r = await fetch(`${TESTNET}/v3/klines?symbol=${symbol}&interval=15m&limit=50`);
+  return (await r.json()).map(k => parseFloat(k[4]));
+}
+
+// ═══ RSI ══════════════════════════════════════════════════════════════════════
+function calcRSI(prices) {
+  if (prices.length < RSI_PERIOD + 1) return null;
+  const r = prices.slice(-RSI_PERIOD - 1);
+  let g=0, l=0;
+  for (let i=1;i<r.length;i++) { const d=r[i]-r[i-1]; d>0?g+=d:l+=Math.abs(d); }
+  const ag=g/RSI_PERIOD, al=l/RSI_PERIOD;
+  if (al===0) return 100;
+  return 100 - 100/(1+ag/al);
+}
+
+function getRsiColor(rsi) {
+  if (rsi==null) return "#4b5563";
+  if (rsi < RSI_OVERSOLD) return "#22c55e";
+  if (rsi > 68) return "#ef4444";
+  return "#f59e0b";
+}
+
+// ═══ CONNECT ══════════════════════════════════════════════════════════════════
+async function handleConnect() {
+  const key = document.getElementById("apiKey").value.trim();
+  const secret = document.getElementById("apiSecret").value.trim();
+  const errBox = document.getElementById("connectError");
+  const btn = document.getElementById("connectBtn");
+  if (!key || !secret) { showError("Please enter both API Key and Secret Key."); return; }
+  errBox.style.display = "none";
+  btn.disabled = true;
+  btn.textContent = "⏳ Connecting...";
+  API_KEY = key; API_SECRET = secret;
+  try {
+    const account = await binanceCall("/v3/account");
+    const usdt = account.balances?.find(b=>b.asset==="USDT");
+    const bal = parseFloat(usdt?.free||0);
+    document.getElementById("connect-screen").style.display = "none";
+    document.getElementById("dashboard-screen").style.display = "block";
+    updateBalance(bal);
+    addLog("✅ Connected to Binance Spot Testnet!", "win");
+    addLog(`💰 Testnet USDT Balance: $${bal.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}`, "info");
+    fetchMarketData();
+    buildChartTabs();
+    loadTVChart(activeChart);
+  } catch(e) {
+    showError(`Connection failed: ${e.message}`);
+    btn.disabled = false;
+    btn.textContent = "⚡ CONNECT TO BINANCE TESTNET";
+    API_KEY = ""; API_SECRET = "";
+  }
+}
+
+function showError(msg) {
+  const b = document.getElementById("connectError");
+  b.textContent = msg; b.style.display = "block";
+}
+
+// ═══ MARKET DATA ═════════════════════════════════════════════════════════════
+async function fetchMarketData() {
+  await Promise.all(SYMBOLS.map(async({pair, symbol})=>{
+    try {
+      prices[pair] = await getPrice(symbol);
+      rsiValues[pair] = calcRSI(await getKlines(symbol));
+    } catch {}
+  }));
+  renderCoins();
+  updateStats();
+}
+
+// ═══ BOT LOGIC ════════════════════════════════════════════════════════════════
+function handleStart() {
+  running = true;
+  document.getElementById("startBtn").innerHTML = "⏹ STOP BOT";
+  document.getElementById("startBtn").style.background = "#dc2626";
+  document.getElementById("startBtn").style.color = "#fff";
+  document.getElementById("startBtn").onclick = handleStop;
+  document.getElementById("statusText").textContent = "SCANNING";
+  document.getElementById("statusText").style.color = "#22c55e";
+  document.getElementById("statusDot").style.animation = "pulse 2s infinite";
+  addLog("🚀 Bot started — scanning every 15 seconds", "info");
+  botInterval = setInterval(botTick, 15000);
+  botTick();
+}
+
+function handleStop() {
+  running = false;
+  clearInterval(botInterval);
+  document.getElementById("startBtn").innerHTML = "▶ START BOT";
+  document.getElementById("startBtn").style.background = "linear-gradient(135deg,#f0b90b,#f57c00)";
+  document.getElementById("startBtn").style.color = "#000";
+  document.getElementById("startBtn").onclick = handleStart;
+  document.getElementById("statusText").textContent = "CONNECTED";
+  document.getElementById("statusText").style.color = "#64748b";
+  document.getElementById("statusDot").style.animation = "none";
+  addLog("⏹ Bot stopped", "warn");
+}
+
+async function botTick() {
+  await fetchMarketData();
+  for (const {pair, symbol} of SYMBOLS) {
+    const price = prices[pair], rsi = rsiValues[pair];
+    if (!price) continue;
+    const pos = positions[pair];
+
+    // Exit logic
+    if (pos) {
+      const pct = (price - pos.entryPrice) / pos.entryPrice;
+      if (pct <= -STOP_LOSS || pct >= TAKE_PROFIT) {
+        const isWin = pct >= TAKE_PROFIT;
+        try {
+          await binanceCall("/v3/order", {symbol, side:"SELL", type:"MARKET", quantity:TRADE_QTY[symbol]}, "POST");
+          const pnl = pos.qty * (price - pos.entryPrice);
+          totalPnl += pnl;
+          isWin ? wins++ : losses++;
+          trades.unshift({pair, type:"SELL", price, qty:pos.qty, pnl, reason: isWin?"Take Profit":"Stop Loss", time: new Date().toLocaleTimeString()});
+          delete positions[pair];
+          addLog(`${isWin?"✅ TAKE PROFIT":"🛑 STOP LOSS"} ${pair} @ $${price.toFixed(2)} | PnL: ${pnl>=0?"+":""}$${pnl.toFixed(2)}`, isWin?"win":"loss");
+          await refreshBalance();
+        } catch(e) { addLog(`❌ SELL failed ${pair}: ${e.message}`, "loss"); }
+      }
+    }
+
+    // Entry logic
+    if (!positions[pair] && rsi !== null && rsi < RSI_OVERSOLD) {
+      try {
+        const qty = TRADE_QTY[symbol];
+        await binanceCall("/v3/order", {symbol, side:"BUY", type:"MARKET", quantity:qty}, "POST");
+        positions[pair] = {entryPrice:price, qty, entryTime:new Date().toLocaleTimeString()};
+        trades.unshift({pair, type:"BUY", price, qty, pnl:null, reason:`RSI ${rsi.toFixed(1)}`, time:new Date().toLocaleTimeString()});
+        addLog(`📈 BUY ${pair} @ $${price.toFixed(2)} | RSI: ${rsi.toFixed(1)}`, "buy");
+        await refreshBalance();
+      } catch(e) { addLog(`❌ BUY failed ${pair}: ${e.message}`, "loss"); }
+    }
+  }
+  renderCoins();
+  renderTrades();
+  updateStats();
+}
+
+async function refreshBalance() {
+  try {
+    const acc = await binanceCall("/v3/account");
+    const usdt = acc.balances?.find(b=>b.asset==="USDT");
+    updateBalance(parseFloat(usdt?.free||0));
+  } catch {}
+}
+
+function updateBalance(bal) {
+  const fmt = `$${bal.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+  document.getElementById("headerBalance").textContent = fmt;
+  document.getElementById("statBalance").textContent = fmt;
+}
+
+// ═══ RENDER ═══════════════════════════════════════════════════════════════════
+function renderCoins() {
+  const grid = document.getElementById("coinsGrid");
+  grid.innerHTML = SYMBOLS.map(({pair, color, tv})=>{
+    const price = prices[pair], rsi = rsiValues[pair], pos = positions[pair];
+    const rsiColor = getRsiColor(rsi);
+    const posHtml = pos ? `
+      <div class="pos-box">
+        <div class="pos-row"><span style="color:#334155">Entry</span><span style="color:#e2e8f0">$${pos.entryPrice.toFixed(2)}</span></div>
+        <div class="pos-row"><span style="color:#ef4444">Stop Loss</span><span style="color:#ef4444">$${(pos.entryPrice*(1-STOP_LOSS)).toFixed(2)}</span></div>
+        <div class="pos-row"><span style="color:#22c55e">Take Profit</span><span style="color:#22c55e">$${(pos.entryPrice*(1+TAKE_PROFIT)).toFixed(2)}</span></div>
+        ${price?`<div class="pos-row"><span style="color:#334155">Live PnL</span><span style="color:${((price-pos.entryPrice)/pos.entryPrice)>=0?"#22c55e":"#ef4444"};font-weight:700">${((price-pos.entryPrice)/pos.entryPrice*100)>=0?"+":""}${((price-pos.entryPrice)/pos.entryPrice*100).toFixed(2)}%</span></div>`:""}
+      </div>` : "";
+    return `<div class="card" style="padding:15px;border-color:${pos?"#f0b90b":"#1e2d45"};${pos?"box-shadow:0 0 18px rgba(240,185,11,.1)":""}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:9px">
+        <div style="display:flex;align-items:center;gap:6px">
+          <div style="width:7px;height:7px;border-radius:50%;background:${color}"></div>
+          <span style="font-family:'Syne',sans-serif;font-weight:700;font-size:12px;color:#f8fafc">${pair}</span>
+        </div>
+        ${pos?'<span class="badge badge-open">OPEN</span>':""}
+      </div>
+      <div style="font-size:19px;font-weight:700;color:#f8fafc;font-family:'Syne',sans-serif;margin-bottom:8px">
+        ${price?`$${price.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}`:'<span style="color:#334155;font-size:13px">Loading...</span>'}
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px;font-size:11px">
+        <span style="color:${rsiColor}">RSI ${rsi!=null?rsi.toFixed(1):"—"}</span>
+        <span style="font-size:10px;color:#334155">15m</span>
+      </div>
+      <div class="rsi-bar"><div class="rsi-fill" style="width:${Math.min(100,rsi??50)}%;background:${rsiColor}"></div></div>
+      ${posHtml}
+      <button class="btn" onclick="viewChart('${tv}')" style="width:100%;padding:6px 0;background:#080c14;color:#f0b90b;font-size:10px;border:1px solid #1e2d45;letter-spacing:.08em;justify-content:center">📊 VIEW CHART</button>
+    </div>`;
+  }).join("");
+}
+
+function updateStats() {
+  const exposure = Object.entries(positions).reduce((a,[pair,p])=>a+p.qty*(prices[pair]||p.entryPrice),0);
+  document.getElementById("statExposure").textContent = `$${exposure.toFixed(2)}`;
+  const pnlEl = document.getElementById("statPnl");
+  pnlEl.textContent = `${totalPnl>=0?"+":""}$${totalPnl.toFixed(2)}`;
+  pnlEl.style.color = totalPnl>=0?"#22c55e":"#ef4444";
+  const total = wins+losses;
+  document.getElementById("statWinRate").textContent = total>0?`${(wins/total*100).toFixed(1)}%`:"—";
+  document.getElementById("statWL").textContent = `${wins}W / ${losses}L`;
+  document.getElementById("statPositions").textContent = Object.keys(positions).length;
+}
+
+function renderTrades() {
+  const tbody = document.getElementById("tradesBody");
+  if (!trades.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#1e2d45;padding:28px">No orders yet</td></tr>'; return; }
+  tbody.innerHTML = trades.slice(0,100).map((t,i)=>`
+    <tr style="${i%2===1?"background:#0a0f1a":""}">
+      <td style="color:#334155">${t.time}</td>
+      <td style="color:#f8fafc;font-weight:700">${t.pair}</td>
+      <td><span class="badge badge-${t.type.toLowerCase()}">${t.type}</span></td>
+      <td style="color:#e2e8f0">$${t.price.toFixed(2)}</td>
+      <td style="color:#64748b">${t.qty}</td>
+      <td style="color:${t.pnl==null?"#334155":t.pnl>=0?"#22c55e":"#ef4444"}">${t.pnl==null?"—":`${t.pnl>=0?"+":""}$${t.pnl.toFixed(2)}`}</td>
+      <td style="color:#334155">${t.reason}</td>
+    </tr>`).join("");
+}
+
+// ═══ LOG ══════════════════════════════════════════════════════════════════════
+function addLog(msg, type="info") {
+  const colors = {win:"#22c55e", loss:"#ef4444", buy:"#60a5fa", warn:"#f59e0b", info:"#64748b"};
+  const logBody = document.getElementById("logBody");
+  const entry = document.createElement("div");
+  entry.className = "log-entry slide";
+  entry.innerHTML = `<span style="color:#1e2d45;white-space:nowrap">${new Date().toLocaleTimeString()}</span><span style="color:${colors[type]||"#64748b"}">${msg}</span>`;
+  if (logBody.firstChild?.textContent?.includes("No activity")) logBody.innerHTML = "";
+  logBody.prepend(entry);
+  while (logBody.children.length > 80) logBody.removeChild(logBody.lastChild);
+}
+
+// ═══ TABS ═════════════════════════════════════════════════════════════════════
+function switchTab(tab) {
+  ["dashboard","charts","trades","log"].forEach(t=>{
+    document.getElementById(`panel-${t}`).style.display = t===tab?"block":"none";
+    document.getElementById(`tab-${t}`).className = `tab${t===tab?" active":""}`;
+  });
+}
+
+// ═══ TRADINGVIEW CHART ════════════════════════════════════════════════════════
+function buildChartTabs() {
+  const container = document.getElementById("chartSymTabs");
+  container.innerHTML = SYMBOLS.map(({pair, tv, color})=>`
+    <div class="sym-tab${tv===activeChart?" active":""}" onclick="viewChart('${tv}')" style="display:flex;align-items:center;gap:5px">
+      <div style="width:6px;height:6px;border-radius:50%;background:${color}"></div>${pair}
+    </div>`).join("");
+}
+
+function viewChart(tv) {
+  activeChart = tv;
+  switchTab("charts");
+  buildChartTabs();
+  loadTVChart(tv);
+}
+
+function loadTVChart(symbol) {
+  const container = document.getElementById("tvChartContainer");
+  container.innerHTML = "";
+  const id = "tv_chart_" + Date.now();
+  container.id = id;
+  const script = document.createElement("script");
+  script.src = "https://s3.tradingview.com/tv.js";
+  script.async = true;
+  script.onload = () => {
+    if (window.TradingView) {
+      new window.TradingView.widget({
+        autosize:true, symbol, interval:"15", timezone:"Etc/UTC",
+        theme:"dark", style:"1", locale:"en",
+        toolbar_bg:"#0d1117", enable_publishing:false,
+        allow_symbol_change:false, container_id:id,
+        hide_side_toolbar:true,
+        studies:["RSI@tv-basicstudies"],
+        overrides:{
+          "paneProperties.background":"#080c14",
+          "paneProperties.backgroundType":"solid",
+          "scalesProperties.textColor":"#4b5563",
+          "mainSeriesProperties.candleStyle.upColor":"#22c55e",
+          "mainSeriesProperties.candleStyle.downColor":"#ef4444",
+          "mainSeriesProperties.candleStyle.borderUpColor":"#22c55e",
+          "mainSeriesProperties.candleStyle.borderDownColor":"#ef4444",
+          "mainSeriesProperties.candleStyle.wickUpColor":"#22c55e",
+          "mainSeriesProperties.candleStyle.wickDownColor":"#ef4444",
+        }
+      });
+    }
+  };
+  document.head.appendChild(script);
+}
+</script>
+</body>
+</html>
