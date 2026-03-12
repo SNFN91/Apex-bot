@@ -38,12 +38,32 @@ def api_post(path, params={}):
     return r.json()
 
 def get_price(symbol):
-    r = requests.get(f"{BASE_URL}/v3/ticker/price?symbol={symbol}", timeout=10)
-    return float(r.json()["price"])
+    try:
+        # Try ticker/price endpoint
+        r = requests.get(f"{BASE_URL}/v3/ticker/price?symbol={symbol}", timeout=10)
+        data = r.json()
+        log.info(f"Price response for {symbol}: {data}")
+        if isinstance(data, dict) and "price" in data:
+            return float(data["price"])
+        # Fallback: try bookTicker
+        r2 = requests.get(f"{BASE_URL}/v3/ticker/bookTicker?symbol={symbol}", timeout=10)
+        data2 = r2.json()
+        log.info(f"BookTicker response for {symbol}: {data2}")
+        if isinstance(data2, dict) and "bidPrice" in data2:
+            return float(data2["bidPrice"])
+    except Exception as e:
+        log.error(f"get_price error {symbol}: {e}")
+    return None
 
 def get_klines(symbol):
-    r = requests.get(f"{BASE_URL}/v3/klines?symbol={symbol}&interval=15m&limit=50", timeout=10)
-    return [float(k[4]) for k in r.json()]
+    try:
+        r = requests.get(f"{BASE_URL}/v3/klines?symbol={symbol}&interval=15m&limit=50", timeout=10)
+        data = r.json()
+        if isinstance(data, list) and len(data) > 0:
+            return [float(k[4]) for k in data]
+    except Exception as e:
+        log.error(f"get_klines error {symbol}: {e}")
+    return []
 
 def calc_rsi(prices):
     if len(prices) < RSI_PERIOD + 1:
@@ -61,10 +81,12 @@ def calc_rsi(prices):
 def get_balance():
     try:
         acc = api_get("/v3/account")
+        log.info(f"Account response keys: {list(acc.keys()) if isinstance(acc, dict) else type(acc)}")
         for b in acc.get("balances", []):
             if b["asset"] == "USDT":
                 return float(b["free"])
-    except: pass
+    except Exception as e:
+        log.error(f"get_balance error: {e}")
     return 0.0
 
 def save_state():
@@ -82,6 +104,11 @@ def bot_tick():
     for symbol in SYMBOLS:
         try:
             price  = get_price(symbol)
+            if price is None:
+                log.warning(f"Could not get price for {symbol}, skipping")
+                continue
+            log.info(f"{symbol} price: {price}")
+
             klines = get_klines(symbol)
             rsi    = calc_rsi(klines)
             pos    = positions.get(symbol)
@@ -122,8 +149,9 @@ def bot_tick():
 if __name__ == "__main__":
     log.info("⚡ APEX BOT starting on Binance Testnet...")
     if not API_KEY or not API_SECRET:
-        log.error("❌ Missing BINANCE_API_KEY or BINANCE_API_SECRET env vars!")
+        log.error("❌ Missing API keys!")
         exit(1)
+    log.info(f"API Key starts with: {API_KEY[:8]}...")
     bal = get_balance()
     log.info(f"💰 Testnet USDT Balance: {bal:,.2f}")
     while True:
