@@ -1,4 +1,4 @@
-import os, time, hmac, hashlib, requests, json, logging
+import os, time, hmac, hashlib, requests, json, logging, base64, urllib.parse
 from datetime import datetime, timezone
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
@@ -16,10 +16,10 @@ RSI_OVERSOLD = 32
 TRADE_USDT   = 100
 
 SYMBOLS = [
-    {"symbol": "BTC", "kraken": "XXBTZUSD", "qty": 0.001},
-    {"symbol": "ETH", "kraken": "XETHZUSD", "qty": 0.01},
-    {"symbol": "SOL", "kraken": "SOLUSD",   "qty": 0.5},
-    {"symbol": "XRP", "kraken": "XXRPZUSD", "qty": 10.0},
+    {"symbol": "BTC",  "kraken_pair": "XBTUSD",  "kraken_order": "XXBTZUSD", "qty": 0.001},
+    {"symbol": "ETH",  "kraken_pair": "ETHUSD",  "kraken_order": "XETHZUSD", "qty": 0.01},
+    {"symbol": "SOL",  "kraken_pair": "SOLUSD",  "kraken_order": "SOLUSD",   "qty": 0.5},
+    {"symbol": "XRP",  "kraken_pair": "XRPUSD",  "kraken_order": "XXRPZUSD", "qty": 10.0},
 ]
 
 positions     = {}
@@ -28,39 +28,42 @@ stats         = {"pnl": 0.0, "wins": 0, "losses": 0}
 paper_balance = 10000.0
 price_cache   = {}
 
-# ═══ PRICES via CryptoCompare (free, no geo restrictions) ════════════════════
+# ═══ KRAKEN PUBLIC API (prices + OHLC — no auth, no geo restrictions) ════════
 def fetch_all_prices():
     try:
-        syms = ",".join(s["symbol"] for s in SYMBOLS)
-        r = requests.get(
-            f"https://min-api.cryptocompare.com/data/pricemulti?fsyms={syms}&tsyms=USD",
-            timeout=15
-        )
+        pairs = ",".join(s["kraken_pair"] for s in SYMBOLS)
+        r = requests.get(f"{KRAKEN_URL}/0/public/Ticker?pair={pairs}", timeout=15)
         data = r.json()
-        log.info(f"Price response: {data}")
+        log.info(f"Kraken ticker response: {data}")
+        if data.get("error"):
+            log.error(f"Kraken ticker error: {data['error']}")
+            return False
         for s in SYMBOLS:
-            sym = s["symbol"]
-            if sym in data and "USD" in data[sym]:
-                price_cache[sym] = float(data[sym]["USD"])
-                log.info(f"✅ {sym} = ${price_cache[sym]:,.2f}")
+            for key, val in data["result"].items():
+                if s["kraken_pair"].upper() in key.upper() or key.upper() in s["kraken_pair"].upper():
+                    price = float(val["c"][0])
+                    price_cache[s["symbol"]] = price
+                    log.info(f"✅ {s['symbol']} = ${price:,.2f}")
         return len(price_cache) > 0
     except Exception as e:
-        log.error(f"fetch_prices error: {e}")
+        log.error(f"fetch_all_prices error: {e}")
         return False
 
-# ═══ RSI via CryptoCompare OHLCV ═════════════════════════════════════════════
-def get_rsi(symbol):
+def get_rsi(kraken_pair):
     try:
         r = requests.get(
-            f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={symbol}&tsym=USD&limit=30&aggregate=4",
+            f"{KRAKEN_URL}/0/public/OHLC?pair={kraken_pair}&interval=240",
             timeout=15
         )
         data = r.json()
-        if data.get("Response") == "Success":
-            closes = [float(d["close"]) for d in data["Data"]["Data"]]
-            return calc_rsi(closes)
+        if data.get("error"):
+            return None
+        result = data["result"]
+        key = [k for k in result.keys() if k != "last"][0]
+        closes = [float(candle[4]) for candle in result[key][-30:]]
+        return calc_rsi(closes)
     except Exception as e:
-        log.error(f"get_rsi error {symbol}: {e}")
+        log.error(f"get_rsi error {kraken_pair}: {e}")
     return None
 
 def calc_rsi(prices):
@@ -77,9 +80,8 @@ def calc_rsi(prices):
     if al == 0: return 100
     return round(100 - 100 / (1 + ag / al), 2)
 
-# ═══ KRAKEN LIVE ══════════════════════════════════════════════════════════════
+# ═══ KRAKEN PRIVATE (live orders) ════════════════════════════════════════════
 def kraken_sign(urlpath, data):
-    import base64, urllib.parse
     postdata = urllib.parse.urlencode(data)
     encoded = (str(data['nonce']) + postdata).encode()
     message = urlpath.encode() + hashlib.sha256(encoded).digest()
@@ -132,7 +134,6 @@ def get_balance():
         return kraken_get_balance()
     return paper_balance
 
-# ═══ SAVE STATE ═══════════════════════════════════════════════════════════════
 def save_state():
     try:
         state = {
@@ -166,8 +167,8 @@ def bot_tick():
                 log.warning(f"No price for {symbol}")
                 continue
 
-            rsi = get_rsi(symbol)
-            log.info(f"{symbol}/USD = ${price:,.2f} | RSI = {rsi if rsi is not None else 'N/A'}")
+            rsi = get_rsi(s["kraken_pair"])
+            log.info(f"{symbol} = ${price:,.2f} | RSI = {rsi}")
             pos = positions.get(symbol)
 
             # Exit
@@ -176,7 +177,7 @@ def bot_tick():
                 if pct <= -STOP_LOSS or pct >= TAKE_PROFIT:
                     is_win = pct >= TAKE_PROFIT
                     if TRADING_MODE == "live":
-                        kraken_place_order(s["kraken"], "sell", pos["qty"])
+                        kraken_place_order(s["kraken_order"], "sell", pos["qty"])
                     else:
                         paper_sell(symbol, price, pos["qty"])
                     pnl = pos["qty"] * (price - pos["entry"])
@@ -198,8 +199,8 @@ def bot_tick():
             if symbol not in positions and rsi is not None and rsi < RSI_OVERSOLD:
                 log.info(f"🎯 BUY SIGNAL {symbol} RSI={rsi}")
                 if TRADING_MODE == "live":
+                    kraken_place_order(s["kraken_order"], "buy", s["qty"])
                     qty = s["qty"]
-                    kraken_place_order(s["kraken"], "buy", qty)
                 else:
                     qty = paper_buy(symbol, price)
                     if qty is None:
@@ -222,7 +223,7 @@ def bot_tick():
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info(f"⚡ APEX BOT | {'🔴 LIVE' if TRADING_MODE == 'live' else '📄 PAPER'} mode")
-    log.info("📊 Prices: CryptoCompare (free, no geo restrictions)")
+    log.info("📊 Prices: Kraken public API (no restrictions)")
 
     if TRADING_MODE == "live":
         if not KRAKEN_API_KEY or not KRAKEN_API_SECRET:
@@ -233,9 +234,9 @@ if __name__ == "__main__":
         log.info(f"💰 Paper Balance: ${paper_balance:,.2f}")
 
     if fetch_all_prices():
-        log.info("✅ CryptoCompare working!")
+        log.info(f"✅ Kraken public API working! Prices: {price_cache}")
     else:
-        log.error("❌ Price API failed!")
+        log.error("❌ Could not fetch prices from Kraken public API!")
 
     while True:
         try:
