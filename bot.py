@@ -1,5 +1,5 @@
 import os, time, hmac, hashlib, requests, json, logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 log = logging.getLogger(__name__)
@@ -15,12 +15,11 @@ RSI_PERIOD   = 14
 RSI_OVERSOLD = 32
 TRADE_USDT   = 100
 
-# CoinGecko IDs for price + Kraken pairs for live trading
 SYMBOLS = [
-    {"symbol": "BTC/USD",  "coingecko": "bitcoin",  "kraken": "XXBTZUSD", "qty": 0.001},
-    {"symbol": "ETH/USD",  "coingecko": "ethereum", "kraken": "XETHZUSD", "qty": 0.01},
-    {"symbol": "SOL/USD",  "coingecko": "solana",   "kraken": "SOLUSD",   "qty": 0.5},
-    {"symbol": "XRP/USD",  "coingecko": "ripple",   "kraken": "XXRPZUSD", "qty": 10.0},
+    {"symbol": "BTC", "kraken": "XXBTZUSD", "qty": 0.001},
+    {"symbol": "ETH", "kraken": "XETHZUSD", "qty": 0.01},
+    {"symbol": "SOL", "kraken": "SOLUSD",   "qty": 0.5},
+    {"symbol": "XRP", "kraken": "XXRPZUSD", "qty": 10.0},
 ]
 
 positions     = {}
@@ -29,43 +28,39 @@ stats         = {"pnl": 0.0, "wins": 0, "losses": 0}
 paper_balance = 10000.0
 price_cache   = {}
 
-# ═══ COINGECKO PRICES (no restrictions) ══════════════════════════════════════
+# ═══ PRICES via CryptoCompare (free, no geo restrictions) ════════════════════
 def fetch_all_prices():
     try:
-        ids = ",".join(s["coingecko"] for s in SYMBOLS)
+        syms = ",".join(s["symbol"] for s in SYMBOLS)
         r = requests.get(
-            f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd",
+            f"https://min-api.cryptocompare.com/data/pricemulti?fsyms={syms}&tsyms=USD",
             timeout=15
         )
         data = r.json()
-        log.info(f"CoinGecko response: {data}")
+        log.info(f"Price response: {data}")
         for s in SYMBOLS:
-            cg_id = s["coingecko"]
-            if cg_id in data and "usd" in data[cg_id]:
-                price_cache[s["symbol"]] = float(data[cg_id]["usd"])
-                log.info(f"✅ {s['symbol']} = ${price_cache[s['symbol']]:,.2f}")
-        return True
+            sym = s["symbol"]
+            if sym in data and "USD" in data[sym]:
+                price_cache[sym] = float(data[sym]["USD"])
+                log.info(f"✅ {sym} = ${price_cache[sym]:,.2f}")
+        return len(price_cache) > 0
     except Exception as e:
-        log.error(f"CoinGecko price error: {e}")
+        log.error(f"fetch_prices error: {e}")
         return False
 
-def get_price(symbol):
-    return price_cache.get(symbol)
-
-# ═══ RSI via CoinGecko OHLC ═══════════════════════════════════════════════════
-def get_rsi(coingecko_id):
+# ═══ RSI via CryptoCompare OHLCV ═════════════════════════════════════════════
+def get_rsi(symbol):
     try:
-        # Get 1-day OHLC (free tier gives 1d candles, enough for trend signal)
         r = requests.get(
-            f"https://api.coingecko.com/api/v3/coins/{coingecko_id}/ohlc?vs_currency=usd&days=14",
+            f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={symbol}&tsym=USD&limit=30&aggregate=4",
             timeout=15
         )
         data = r.json()
-        if isinstance(data, list) and len(data) > RSI_PERIOD:
-            closes = [float(d[4]) for d in data]
+        if data.get("Response") == "Success":
+            closes = [float(d["close"]) for d in data["Data"]["Data"]]
             return calc_rsi(closes)
     except Exception as e:
-        log.error(f"RSI error {coingecko_id}: {e}")
+        log.error(f"get_rsi error {symbol}: {e}")
     return None
 
 def calc_rsi(prices):
@@ -77,11 +72,12 @@ def calc_rsi(prices):
         d = recent[i] - recent[i-1]
         if d > 0: gains += d
         else: losses += abs(d)
-    ag, al = gains/RSI_PERIOD, losses/RSI_PERIOD
+    ag = gains / RSI_PERIOD
+    al = losses / RSI_PERIOD
     if al == 0: return 100
-    return 100 - 100/(1 + ag/al)
+    return round(100 - 100 / (1 + ag / al), 2)
 
-# ═══ KRAKEN LIVE TRADING ══════════════════════════════════════════════════════
+# ═══ KRAKEN LIVE ══════════════════════════════════════════════════════════════
 def kraken_sign(urlpath, data):
     import base64, urllib.parse
     postdata = urllib.parse.urlencode(data)
@@ -114,7 +110,7 @@ def kraken_place_order(pair, side, qty):
         "ordertype": "market", "volume": str(qty)
     })
 
-# ═══ PAPER TRADING ════════════════════════════════════════════════════════════
+# ═══ PAPER ════════════════════════════════════════════════════════════════════
 def paper_buy(symbol, price):
     global paper_balance
     qty = round(TRADE_USDT / price, 6)
@@ -146,7 +142,7 @@ def save_state():
             "balance": get_balance(),
             "mode": TRADING_MODE,
             "prices": price_cache,
-            "updated": datetime.utcnow().isoformat()
+            "updated": datetime.now(timezone.utc).isoformat()
         }
         with open("/tmp/state.json", "w") as f:
             json.dump(state, f)
@@ -155,24 +151,26 @@ def save_state():
 
 # ═══ BOT TICK ════════════════════════════════════════════════════════════════
 def bot_tick():
-    log.info(f"--- Tick {datetime.utcnow().strftime('%H:%M:%S')} | {TRADING_MODE.upper()} | ${get_balance():,.2f} ---")
+    now = datetime.now(timezone.utc).strftime('%H:%M:%S')
+    log.info(f"--- Tick {now} | {TRADING_MODE.upper()} | ${get_balance():,.2f} ---")
 
-    # Fetch all prices in one call
-    fetch_all_prices()
+    if not fetch_all_prices():
+        log.error("Could not fetch prices, skipping tick")
+        return
 
     for s in SYMBOLS:
         symbol = s["symbol"]
         try:
-            price = get_price(symbol)
-            if price is None:
-                log.warning(f"No price for {symbol}, skipping")
+            price = price_cache.get(symbol)
+            if not price:
+                log.warning(f"No price for {symbol}")
                 continue
 
-            rsi = get_rsi(s["coingecko"])
-            log.info(f"{symbol} RSI={round(rsi,1) if rsi is not None else 'N/A'}")
+            rsi = get_rsi(symbol)
+            log.info(f"{symbol}/USD = ${price:,.2f} | RSI = {rsi if rsi is not None else 'N/A'}")
             pos = positions.get(symbol)
 
-            # Exit logic
+            # Exit
             if pos:
                 pct = (price - pos["entry"]) / pos["entry"]
                 if pct <= -STOP_LOSS or pct >= TAKE_PROFIT:
@@ -185,13 +183,20 @@ def bot_tick():
                     stats["pnl"] += pnl
                     if is_win: stats["wins"] += 1
                     else: stats["losses"] += 1
-                    trades.append({"symbol": symbol, "side": "SELL", "price": price, "qty": pos["qty"], "pnl": round(pnl,4), "reason": "Take Profit" if is_win else "Stop Loss", "time": datetime.utcnow().isoformat(), "mode": TRADING_MODE})
+                    trades.append({
+                        "symbol": f"{symbol}/USD", "side": "SELL",
+                        "price": price, "qty": pos["qty"],
+                        "pnl": round(pnl, 4),
+                        "reason": "Take Profit" if is_win else "Stop Loss",
+                        "time": datetime.now(timezone.utc).isoformat(),
+                        "mode": TRADING_MODE
+                    })
                     del positions[symbol]
                     log.info(f"{'✅ TP' if is_win else '🛑 SL'} {symbol} @ ${price:,.2f} PnL={pnl:+.2f}")
 
-            # Entry logic
+            # Entry
             if symbol not in positions and rsi is not None and rsi < RSI_OVERSOLD:
-                log.info(f"🎯 BUY SIGNAL {symbol} RSI={rsi:.1f}")
+                log.info(f"🎯 BUY SIGNAL {symbol} RSI={rsi}")
                 if TRADING_MODE == "live":
                     qty = s["qty"]
                     kraken_place_order(s["kraken"], "buy", qty)
@@ -199,21 +204,26 @@ def bot_tick():
                     qty = paper_buy(symbol, price)
                     if qty is None:
                         continue
-                positions[symbol] = {"entry": price, "qty": qty, "time": datetime.utcnow().isoformat()}
-                trades.append({"symbol": symbol, "side": "BUY", "price": price, "qty": qty, "pnl": None, "reason": f"RSI {rsi:.1f}", "time": datetime.utcnow().isoformat(), "mode": TRADING_MODE})
+                positions[symbol] = {"entry": price, "qty": qty, "time": datetime.now(timezone.utc).isoformat()}
+                trades.append({
+                    "symbol": f"{symbol}/USD", "side": "BUY",
+                    "price": price, "qty": qty, "pnl": None,
+                    "reason": f"RSI {rsi}",
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "mode": TRADING_MODE
+                })
                 log.info(f"📈 {'LIVE' if TRADING_MODE == 'live' else 'PAPER'} BUY {symbol} @ ${price:,.2f}")
 
         except Exception as e:
             log.error(f"Tick error {symbol}: {e}")
 
     save_state()
-    # CoinGecko free tier: max 10-30 calls/min — sleep between ticks
-    time.sleep(2)
 
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info(f"⚡ APEX BOT | {'🔴 LIVE' if TRADING_MODE == 'live' else '📄 PAPER'} mode")
-    log.info("📊 Prices: CoinGecko (no geo restrictions)")
+    log.info("📊 Prices: CryptoCompare (free, no geo restrictions)")
+
     if TRADING_MODE == "live":
         if not KRAKEN_API_KEY or not KRAKEN_API_SECRET:
             log.error("❌ Missing KRAKEN_API_KEY or KRAKEN_API_SECRET!")
@@ -222,16 +232,15 @@ if __name__ == "__main__":
     else:
         log.info(f"💰 Paper Balance: ${paper_balance:,.2f}")
 
-    # Test CoinGecko
     if fetch_all_prices():
-        log.info("✅ CoinGecko working!")
+        log.info("✅ CryptoCompare working!")
     else:
-        log.error("❌ CoinGecko failed!")
+        log.error("❌ Price API failed!")
 
     while True:
         try:
             bot_tick()
         except Exception as e:
             log.error(f"Bot error: {e}")
-        log.info("⏳ Sleeping 60s...")
-        time.sleep(60)
+        log.info("⏳ Sleeping 120s...")
+        time.sleep(120)
