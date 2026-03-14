@@ -15,11 +15,12 @@ RSI_PERIOD   = 14
 RSI_OVERSOLD = 32
 TRADE_USDT   = 100
 
+# kraken_ticker = exact key returned by Kraken API
 SYMBOLS = [
-    {"symbol": "BTC",  "kraken_pair": "XBTUSD",  "kraken_order": "XXBTZUSD", "qty": 0.001},
-    {"symbol": "ETH",  "kraken_pair": "ETHUSD",  "kraken_order": "XETHZUSD", "qty": 0.01},
-    {"symbol": "SOL",  "kraken_pair": "SOLUSD",  "kraken_order": "SOLUSD",   "qty": 0.5},
-    {"symbol": "XRP",  "kraken_pair": "XRPUSD",  "kraken_order": "XXRPZUSD", "qty": 10.0},
+    {"symbol": "BTC", "kraken_ticker": "XXBTZUSD", "kraken_ohlc": "XBTUSD",  "kraken_order": "XXBTZUSD", "qty": 0.001},
+    {"symbol": "ETH", "kraken_ticker": "XETHZUSD", "kraken_ohlc": "ETHUSD",  "kraken_order": "XETHZUSD", "qty": 0.01},
+    {"symbol": "SOL", "kraken_ticker": "SOLUSD",   "kraken_ohlc": "SOLUSD",  "kraken_order": "SOLUSD",   "qty": 0.5},
+    {"symbol": "XRP", "kraken_ticker": "XXRPZUSD", "kraken_ohlc": "XRPUSD",  "kraken_order": "XXRPZUSD", "qty": 10.0},
 ]
 
 positions     = {}
@@ -28,42 +29,44 @@ stats         = {"pnl": 0.0, "wins": 0, "losses": 0}
 paper_balance = 10000.0
 price_cache   = {}
 
-# ═══ KRAKEN PUBLIC API (prices + OHLC — no auth, no geo restrictions) ════════
 def fetch_all_prices():
     try:
-        pairs = ",".join(s["kraken_pair"] for s in SYMBOLS)
+        pairs = ",".join(s["kraken_ticker"] for s in SYMBOLS)
         r = requests.get(f"{KRAKEN_URL}/0/public/Ticker?pair={pairs}", timeout=15)
         data = r.json()
-        log.info(f"Kraken ticker response: {data}")
         if data.get("error"):
             log.error(f"Kraken ticker error: {data['error']}")
             return False
+        result = data["result"]
         for s in SYMBOLS:
-            for key, val in data["result"].items():
-                if s["kraken_pair"].upper() in key.upper() or key.upper() in s["kraken_pair"].upper():
-                    price = float(val["c"][0])
-                    price_cache[s["symbol"]] = price
-                    log.info(f"✅ {s['symbol']} = ${price:,.2f}")
+            ticker_key = s["kraken_ticker"]
+            if ticker_key in result:
+                price = float(result[ticker_key]["c"][0])
+                price_cache[s["symbol"]] = price
+                log.info(f"✅ {s['symbol']} = ${price:,.2f}")
+            else:
+                log.warning(f"Key {ticker_key} not found in result: {list(result.keys())}")
         return len(price_cache) > 0
     except Exception as e:
         log.error(f"fetch_all_prices error: {e}")
         return False
 
-def get_rsi(kraken_pair):
+def get_rsi(kraken_ohlc):
     try:
         r = requests.get(
-            f"{KRAKEN_URL}/0/public/OHLC?pair={kraken_pair}&interval=240",
+            f"{KRAKEN_URL}/0/public/OHLC?pair={kraken_ohlc}&interval=240",
             timeout=15
         )
         data = r.json()
-        if data.get("error"):
+        if data.get("error") and data["error"]:
+            log.error(f"OHLC error: {data['error']}")
             return None
         result = data["result"]
         key = [k for k in result.keys() if k != "last"][0]
-        closes = [float(candle[4]) for candle in result[key][-30:]]
+        closes = [float(c[4]) for c in result[key][-30:]]
         return calc_rsi(closes)
     except Exception as e:
-        log.error(f"get_rsi error {kraken_pair}: {e}")
+        log.error(f"get_rsi error {kraken_ohlc}: {e}")
     return None
 
 def calc_rsi(prices):
@@ -80,7 +83,6 @@ def calc_rsi(prices):
     if al == 0: return 100
     return round(100 - 100 / (1 + ag / al), 2)
 
-# ═══ KRAKEN PRIVATE (live orders) ════════════════════════════════════════════
 def kraken_sign(urlpath, data):
     postdata = urllib.parse.urlencode(data)
     encoded = (str(data['nonce']) + postdata).encode()
@@ -112,7 +114,6 @@ def kraken_place_order(pair, side, qty):
         "ordertype": "market", "volume": str(qty)
     })
 
-# ═══ PAPER ════════════════════════════════════════════════════════════════════
 def paper_buy(symbol, price):
     global paper_balance
     qty = round(TRADE_USDT / price, 6)
@@ -150,7 +151,6 @@ def save_state():
     except Exception as e:
         log.error(f"save_state error: {e}")
 
-# ═══ BOT TICK ════════════════════════════════════════════════════════════════
 def bot_tick():
     now = datetime.now(timezone.utc).strftime('%H:%M:%S')
     log.info(f"--- Tick {now} | {TRADING_MODE.upper()} | ${get_balance():,.2f} ---")
@@ -167,11 +167,10 @@ def bot_tick():
                 log.warning(f"No price for {symbol}")
                 continue
 
-            rsi = get_rsi(s["kraken_pair"])
+            rsi = get_rsi(s["kraken_ohlc"])
             log.info(f"{symbol} = ${price:,.2f} | RSI = {rsi}")
             pos = positions.get(symbol)
 
-            # Exit
             if pos:
                 pct = (price - pos["entry"]) / pos["entry"]
                 if pct <= -STOP_LOSS or pct >= TAKE_PROFIT:
@@ -184,18 +183,10 @@ def bot_tick():
                     stats["pnl"] += pnl
                     if is_win: stats["wins"] += 1
                     else: stats["losses"] += 1
-                    trades.append({
-                        "symbol": f"{symbol}/USD", "side": "SELL",
-                        "price": price, "qty": pos["qty"],
-                        "pnl": round(pnl, 4),
-                        "reason": "Take Profit" if is_win else "Stop Loss",
-                        "time": datetime.now(timezone.utc).isoformat(),
-                        "mode": TRADING_MODE
-                    })
+                    trades.append({"symbol": f"{symbol}/USD", "side": "SELL", "price": price, "qty": pos["qty"], "pnl": round(pnl,4), "reason": "Take Profit" if is_win else "Stop Loss", "time": datetime.now(timezone.utc).isoformat(), "mode": TRADING_MODE})
                     del positions[symbol]
                     log.info(f"{'✅ TP' if is_win else '🛑 SL'} {symbol} @ ${price:,.2f} PnL={pnl:+.2f}")
 
-            # Entry
             if symbol not in positions and rsi is not None and rsi < RSI_OVERSOLD:
                 log.info(f"🎯 BUY SIGNAL {symbol} RSI={rsi}")
                 if TRADING_MODE == "live":
@@ -206,13 +197,7 @@ def bot_tick():
                     if qty is None:
                         continue
                 positions[symbol] = {"entry": price, "qty": qty, "time": datetime.now(timezone.utc).isoformat()}
-                trades.append({
-                    "symbol": f"{symbol}/USD", "side": "BUY",
-                    "price": price, "qty": qty, "pnl": None,
-                    "reason": f"RSI {rsi}",
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "mode": TRADING_MODE
-                })
+                trades.append({"symbol": f"{symbol}/USD", "side": "BUY", "price": price, "qty": qty, "pnl": None, "reason": f"RSI {rsi}", "time": datetime.now(timezone.utc).isoformat(), "mode": TRADING_MODE})
                 log.info(f"📈 {'LIVE' if TRADING_MODE == 'live' else 'PAPER'} BUY {symbol} @ ${price:,.2f}")
 
         except Exception as e:
@@ -220,11 +205,9 @@ def bot_tick():
 
     save_state()
 
-# ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info(f"⚡ APEX BOT | {'🔴 LIVE' if TRADING_MODE == 'live' else '📄 PAPER'} mode")
-    log.info("📊 Prices: Kraken public API (no restrictions)")
-
+    log.info("📊 Prices: Kraken public API")
     if TRADING_MODE == "live":
         if not KRAKEN_API_KEY or not KRAKEN_API_SECRET:
             log.error("❌ Missing KRAKEN_API_KEY or KRAKEN_API_SECRET!")
@@ -232,12 +215,10 @@ if __name__ == "__main__":
         log.info(f"💰 Kraken Balance: ${kraken_get_balance():,.2f}")
     else:
         log.info(f"💰 Paper Balance: ${paper_balance:,.2f}")
-
     if fetch_all_prices():
-        log.info(f"✅ Kraken public API working! Prices: {price_cache}")
+        log.info(f"✅ All prices loaded: {price_cache}")
     else:
-        log.error("❌ Could not fetch prices from Kraken public API!")
-
+        log.error("❌ Could not fetch prices!")
     while True:
         try:
             bot_tick()
