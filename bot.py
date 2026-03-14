@@ -224,5 +224,5 @@ if __name__ == "__main__":
             bot_tick()
         except Exception as e:
             log.error(f"Bot error: {e}")
-        log.info("⏳ Sleeping 120s...")
-        time.sleep(120)
+        log.info("⏳ Sleeping 60s...")
+        time.sleep(60)
