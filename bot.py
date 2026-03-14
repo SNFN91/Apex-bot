@@ -6,7 +6,11 @@ log = logging.getLogger(__name__)
 
 API_KEY    = os.environ.get("BINANCE_API_KEY", "")
 API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
-BASE_URL   = "https://testnet.binance.vision/api"
+
+# Use real Binance for market data (public, no restrictions)
+MARKET_URL = "https://api.binance.com/api"
+# Use testnet only for orders
+ORDER_URL  = "https://testnet.binance.vision/api"
 
 STOP_LOSS    = 0.02
 TAKE_PROFIT  = 0.035
@@ -19,50 +23,37 @@ positions = {}
 trades    = []
 stats     = {"pnl": 0.0, "wins": 0, "losses": 0}
 
-def sign(params):
+def sign(params, secret):
     params["timestamp"] = int(time.time() * 1000)
     qs = "&".join(f"{k}={v}" for k, v in params.items())
-    sig = hmac.new(API_SECRET.encode(), qs.encode(), hashlib.sha256).hexdigest()
+    sig = hmac.new(secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
     return qs + "&signature=" + sig
 
-def api_get(path, params={}):
-    qs = sign(dict(params))
-    r = requests.get(f"{BASE_URL}{path}?{qs}", headers={"X-MBX-APIKEY": API_KEY}, timeout=10)
+def testnet_get(path, params={}):
+    qs = sign(dict(params), API_SECRET)
+    r = requests.get(f"{ORDER_URL}{path}?{qs}", headers={"X-MBX-APIKEY": API_KEY}, timeout=10)
     r.raise_for_status()
     return r.json()
 
-def api_post(path, params={}):
-    qs = sign(dict(params))
-    r = requests.post(f"{BASE_URL}{path}?{qs}", headers={"X-MBX-APIKEY": API_KEY}, timeout=10)
+def testnet_post(path, params={}):
+    qs = sign(dict(params), API_SECRET)
+    r = requests.post(f"{ORDER_URL}{path}?{qs}", headers={"X-MBX-APIKEY": API_KEY}, timeout=10)
     r.raise_for_status()
     return r.json()
 
 def get_price(symbol):
-    try:
-        # Try ticker/price endpoint
-        r = requests.get(f"{BASE_URL}/v3/ticker/price?symbol={symbol}", timeout=10)
-        data = r.json()
-        log.info(f"Price response for {symbol}: {data}")
-        if isinstance(data, dict) and "price" in data:
-            return float(data["price"])
-        # Fallback: try bookTicker
-        r2 = requests.get(f"{BASE_URL}/v3/ticker/bookTicker?symbol={symbol}", timeout=10)
-        data2 = r2.json()
-        log.info(f"BookTicker response for {symbol}: {data2}")
-        if isinstance(data2, dict) and "bidPrice" in data2:
-            return float(data2["bidPrice"])
-    except Exception as e:
-        log.error(f"get_price error {symbol}: {e}")
+    # Use public Binance API — no restrictions
+    r = requests.get(f"{MARKET_URL}/v3/ticker/price?symbol={symbol}", timeout=10)
+    data = r.json()
+    if "price" in data:
+        return float(data["price"])
     return None
 
 def get_klines(symbol):
-    try:
-        r = requests.get(f"{BASE_URL}/v3/klines?symbol={symbol}&interval=15m&limit=50", timeout=10)
-        data = r.json()
-        if isinstance(data, list) and len(data) > 0:
-            return [float(k[4]) for k in data]
-    except Exception as e:
-        log.error(f"get_klines error {symbol}: {e}")
+    r = requests.get(f"{MARKET_URL}/v3/klines?symbol={symbol}&interval=15m&limit=50", timeout=10)
+    data = r.json()
+    if isinstance(data, list):
+        return [float(k[4]) for k in data]
     return []
 
 def calc_rsi(prices):
@@ -80,8 +71,7 @@ def calc_rsi(prices):
 
 def get_balance():
     try:
-        acc = api_get("/v3/account")
-        log.info(f"Account response keys: {list(acc.keys()) if isinstance(acc, dict) else type(acc)}")
+        acc = testnet_get("/v3/account")
         for b in acc.get("balances", []):
             if b["asset"] == "USDT":
                 return float(b["free"])
@@ -103,23 +93,22 @@ def save_state():
 def bot_tick():
     for symbol in SYMBOLS:
         try:
-            price  = get_price(symbol)
+            price = get_price(symbol)
             if price is None:
-                log.warning(f"Could not get price for {symbol}, skipping")
+                log.warning(f"No price for {symbol}")
                 continue
-            log.info(f"{symbol} price: {price}")
+            log.info(f"{symbol} = ${price:.2f}")
 
             klines = get_klines(symbol)
-            rsi    = calc_rsi(klines)
-            pos    = positions.get(symbol)
+            rsi = calc_rsi(klines)
+            pos = positions.get(symbol)
 
-            # Exit logic
             if pos:
                 pct = (price - pos["entry"]) / pos["entry"]
                 if pct <= -STOP_LOSS or pct >= TAKE_PROFIT:
                     is_win = pct >= TAKE_PROFIT
                     try:
-                        api_post("/v3/order", {"symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": TRADE_QTY[symbol]})
+                        testnet_post("/v3/order", {"symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": TRADE_QTY[symbol]})
                         pnl = pos["qty"] * (price - pos["entry"])
                         stats["pnl"] += pnl
                         if is_win: stats["wins"] += 1
@@ -130,11 +119,10 @@ def bot_tick():
                     except Exception as e:
                         log.error(f"SELL error {symbol}: {e}")
 
-            # Entry logic
             if symbol not in positions and rsi is not None and rsi < RSI_OVERSOLD:
                 try:
                     qty = TRADE_QTY[symbol]
-                    api_post("/v3/order", {"symbol": symbol, "side": "BUY", "type": "MARKET", "quantity": qty})
+                    testnet_post("/v3/order", {"symbol": symbol, "side": "BUY", "type": "MARKET", "quantity": qty})
                     positions[symbol] = {"entry": price, "qty": qty, "time": datetime.utcnow().isoformat()}
                     trades.append({"symbol": symbol, "side": "BUY", "price": price, "qty": qty, "pnl": None, "reason": f"RSI {rsi:.1f}", "time": datetime.utcnow().isoformat()})
                     log.info(f"📈 BUY {symbol} @ {price:.2f} RSI={rsi:.1f}")
@@ -147,13 +135,21 @@ def bot_tick():
     save_state()
 
 if __name__ == "__main__":
-    log.info("⚡ APEX BOT starting on Binance Testnet...")
+    log.info("⚡ APEX BOT starting...")
+    log.info("📊 Market data: Binance public API")
+    log.info("🔑 Orders: Binance Testnet")
     if not API_KEY or not API_SECRET:
         log.error("❌ Missing API keys!")
         exit(1)
-    log.info(f"API Key starts with: {API_KEY[:8]}...")
+    # Test public API first
+    try:
+        price = get_price("BTCUSDT")
+        log.info(f"✅ Public API working — BTC = ${price:.2f}")
+    except Exception as e:
+        log.error(f"❌ Public API error: {e}")
+    # Test testnet balance
     bal = get_balance()
-    log.info(f"💰 Testnet USDT Balance: {bal:,.2f}")
+    log.info(f"💰 Testnet USDT Balance: ${bal:,.2f}")
     while True:
         try:
             bot_tick()
