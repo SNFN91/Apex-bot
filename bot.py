@@ -11,19 +11,17 @@ KRAKEN_API_KEY    = os.environ.get("KRAKEN_API_KEY", "")
 KRAKEN_API_SECRET = os.environ.get("KRAKEN_API_SECRET", "")
 KRAKEN_URL        = "https://api.kraken.com"
 
-STOP_LOSS    = 0.02    # 2% stop loss
-TAKE_PROFIT  = 0.035   # 3.5% take profit
+STOP_LOSS    = 0.01    # 1% stop loss — tight scalping    # 2% stop loss
+TAKE_PROFIT  = 0.02    # 2% take profit — fast exits   # 3.5% take profit
 RSI_PERIOD   = 14
 RSI_BUY      = 45      # buy when RSI < 45 (dipping)
 RSI_SELL     = 60      # sell when RSI > 60 (recovering)
-RSI_INTERVAL = 5       # 5-minute candles — responsive but not noisy
-TRADE_USDT   = 50      # $50 per trade
+RSI_INTERVAL = 1       # 1-minute candles — instant scalping
+TRADE_USDT   = 10      # $10 per trade (safe for live trading)
 
 SYMBOLS = [
-    {"symbol": "BTC", "kraken_ticker": "XXBTZUSD", "kraken_ohlc": "XBTUSD",  "kraken_order": "XXBTZUSD"},
-    {"symbol": "ETH", "kraken_ticker": "XETHZUSD", "kraken_ohlc": "ETHUSD",  "kraken_order": "XETHZUSD"},
-    {"symbol": "SOL", "kraken_ticker": "SOLUSD",   "kraken_ohlc": "SOLUSD",  "kraken_order": "SOLUSD"},
-    {"symbol": "XRP", "kraken_ticker": "XXRPZUSD", "kraken_ohlc": "XRPUSD",  "kraken_order": "XXRPZUSD"},
+    {"symbol": "BTC", "kraken_ticker": "XXBTZUSD", "kraken_ohlc": "XBTUSD", "kraken_order": "XXBTZUSD"},
+    {"symbol": "ETH", "kraken_ticker": "XETHZUSD", "kraken_ohlc": "ETHUSD", "kraken_order": "XETHZUSD"},
 ]
 
 positions     = {}
@@ -33,6 +31,7 @@ paper_balance = 10000.0
 price_cache      = {}
 last_price_cache = {}
 rsi_cache        = {}
+last_rsi_cache   = {}  # fallback when OHLC fetch fails
 
 session = requests.Session()
 retries = Retry(total=5, backoff_factor=2, status_forcelist=[502, 503, 504])
@@ -81,15 +80,23 @@ def get_rsi(kraken_ohlc, symbol):
         )
         data = r.json()
         if data.get("error") and data["error"]:
+            if symbol in last_rsi_cache:
+                log.warning(f"⚠️ Using cached RSI for {symbol}: {last_rsi_cache[symbol]}")
+                return last_rsi_cache[symbol]
             return None
         result = data["result"]
         key = [k for k in result.keys() if k != "last"][0]
         closes = [float(c[4]) for c in result[key][-30:]]
         rsi = calc_rsi(closes)
-        rsi_cache[symbol] = rsi
+        if rsi is not None:
+            rsi_cache[symbol] = rsi
+            last_rsi_cache[symbol] = rsi  # update fallback cache
         return rsi
     except Exception as e:
         log.error(f"get_rsi error {kraken_ohlc}: {e}")
+        if symbol in last_rsi_cache:
+            log.warning(f"⚠️ Using cached RSI for {symbol}: {last_rsi_cache[symbol]}")
+            return last_rsi_cache[symbol]
     return None
 
 def calc_rsi(prices):
@@ -171,6 +178,7 @@ def save_state():
             "mode": TRADING_MODE,
             "prices": price_cache,
             "rsi": rsi_cache,
+            "last_rsi": last_rsi_cache,
             "updated": datetime.now(timezone.utc).isoformat()
         }
         with open("/tmp/state.json", "w") as f:
@@ -283,5 +291,5 @@ if __name__ == "__main__":
             bot_tick()
         except Exception as e:
             log.error(f"Bot error: {e}")
-        log.info("⏳ Sleeping 60s...")
-        time.sleep(60)
+        log.info("⏳ Sleeping 30s...")
+        time.sleep(30)
