@@ -5,7 +5,7 @@ from urllib.parse import urlparse, parse_qs
 STATE_FILE = "/tmp/state.json"
 
 # Global active strategy (shared with bot via file)
-active_strategy = "BOTH"
+active_strategy = "BOTH"  # default is BOTH
 
 HTML = """<!DOCTYPE html>
 <html><head>
