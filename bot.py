@@ -9,15 +9,14 @@ KRAKEN_API_KEY    = os.environ.get("KRAKEN_API_KEY", "")
 KRAKEN_API_SECRET = os.environ.get("KRAKEN_API_SECRET", "")
 KRAKEN_URL        = "https://api.kraken.com"
 
-STOP_LOSS    = 0.02
-TAKE_PROFIT  = 0.035
+STOP_LOSS    = 0.02          # 2% stop loss
+TAKE_PROFIT  = 0.035         # 3.5% take profit
 RSI_PERIOD   = 14
-RSI_OVERSOLD = 45
-TRADE_USDT   = 100
+TRADE_USDT   = 50            # MODIFIED: now $50 per trade
 
 # kraken_ticker = exact key returned by Kraken API
 SYMBOLS = [
-    {"symbol": "BTC", "kraken_ticker": "XXBTZUSD", "kraken_ohlc": "XBTUSD",  "kraken_order": "XXBTZUSD", "qty": 0.001},
+    {"symbol": "BTC", "kraken_ticker": "XXBTZUSD", "kraken_ohlc": "XBTUSD",  "kraken_order": "XXBTZUSD", "qty": 0.001},  # qty only used for live mode (not paper)
     {"symbol": "ETH", "kraken_ticker": "XETHZUSD", "kraken_ohlc": "ETHUSD",  "kraken_order": "XETHZUSD", "qty": 0.01},
     {"symbol": "SOL", "kraken_ticker": "SOLUSD",   "kraken_ohlc": "SOLUSD",  "kraken_order": "SOLUSD",   "qty": 0.5},
     {"symbol": "XRP", "kraken_ticker": "XXRPZUSD", "kraken_ohlc": "XRPUSD",  "kraken_order": "XXRPZUSD", "qty": 10.0},
@@ -54,7 +53,7 @@ def fetch_all_prices():
 def get_rsi(kraken_ohlc):
     try:
         r = requests.get(
-            f"{KRAKEN_URL}/0/public/OHLC?pair={kraken_ohlc}&interval=240",
+            f"{KRAKEN_URL}/0/public/OHLC?pair={kraken_ohlc}&interval=60",
             timeout=15
         )
         data = r.json()
@@ -159,6 +158,7 @@ def bot_tick():
         log.error("Could not fetch prices, skipping tick")
         return
 
+    # First, check existing positions for take profit / stop loss
     for s in SYMBOLS:
         symbol = s["symbol"]
         try:
@@ -167,8 +167,10 @@ def bot_tick():
                 log.warning(f"No price for {symbol}")
                 continue
 
+            # Log RSI for information only (not used for entry)
             rsi = get_rsi(s["kraken_ohlc"])
             log.info(f"{symbol} = ${price:,.2f} | RSI = {rsi}")
+
             pos = positions.get(symbol)
 
             if pos:
@@ -187,21 +189,31 @@ def bot_tick():
                     del positions[symbol]
                     log.info(f"{'✅ TP' if is_win else '🛑 SL'} {symbol} @ ${price:,.2f} PnL={pnl:+.2f}")
 
-            if symbol not in positions and rsi is not None and rsi < RSI_OVERSOLD:
-                log.info(f"🎯 BUY SIGNAL {symbol} RSI={rsi}")
-                if TRADING_MODE == "live":
-                    kraken_place_order(s["kraken_order"], "buy", s["qty"])
-                    qty = s["qty"]
-                else:
-                    qty = paper_buy(symbol, price)
-                    if qty is None:
-                        continue
-                positions[symbol] = {"entry": price, "qty": qty, "time": datetime.now(timezone.utc).isoformat()}
-                trades.append({"symbol": f"{symbol}/USD", "side": "BUY", "price": price, "qty": qty, "pnl": None, "reason": f"RSI {rsi}", "time": datetime.now(timezone.utc).isoformat(), "mode": TRADING_MODE})
-                log.info(f"📈 {'LIVE' if TRADING_MODE == 'live' else 'PAPER'} BUY {symbol} @ ${price:,.2f}")
-
         except Exception as e:
             log.error(f"Tick error {symbol}: {e}")
+
+    # MODIFIED: After handling exits, try to buy one new position (if any slot free)
+    for s in SYMBOLS:
+        symbol = s["symbol"]
+        if symbol not in positions:                     # only buy if we don't already hold it
+            price = price_cache.get(symbol)
+            if not price:
+                continue
+
+            log.info(f"🎯 ENTRY SIGNAL (time‑based) for {symbol}")
+            if TRADING_MODE == "live":
+                # For live mode, calculate quantity based on $50 (use TRADE_USDT)
+                qty = TRADE_USDT / price
+                kraken_place_order(s["kraken_order"], "buy", qty)
+            else:
+                qty = paper_buy(symbol, price)
+                if qty is None:                         # insufficient balance
+                    continue
+
+            positions[symbol] = {"entry": price, "qty": qty, "time": datetime.now(timezone.utc).isoformat()}
+            trades.append({"symbol": f"{symbol}/USD", "side": "BUY", "price": price, "qty": qty, "pnl": None, "reason": "Time trigger (every 60s)", "time": datetime.now(timezone.utc).isoformat(), "mode": TRADING_MODE})
+            log.info(f"📈 {'LIVE' if TRADING_MODE == 'live' else 'PAPER'} BUY {symbol} @ ${price:,.2f}")
+            break   # buy only one symbol per minute
 
     save_state()
 
