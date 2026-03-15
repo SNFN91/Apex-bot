@@ -30,33 +30,44 @@ positions     = {}
 trades        = []
 stats         = {"pnl": 0.0, "wins": 0, "losses": 0}
 paper_balance = 10000.0
-price_cache   = {}
-rsi_cache     = {}
+price_cache      = {}
+last_price_cache = {}
+rsi_cache        = {}
 
 session = requests.Session()
-retries = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
+retries = Retry(total=5, backoff_factor=2, status_forcelist=[502, 503, 504])
 session.mount('https://', HTTPAdapter(max_retries=retries))
 
 # ═══ PRICES ═══════════════════════════════════════════════════════════════════
 def fetch_all_prices():
-    global price_cache
-    price_cache = {}
+    global price_cache, last_price_cache
+    temp_prices = {}
     pairs = ",".join(s["kraken_ticker"] for s in SYMBOLS)
     for attempt in range(3):
         try:
-            r = session.get(f"{KRAKEN_URL}/0/public/Ticker?pair={pairs}", timeout=30)
+            r = session.get(f"{KRAKEN_URL}/0/public/Ticker?pair={pairs}", timeout=45)
             data = r.json()
             if data.get("error"):
+                log.error(f"Kraken ticker error: {data['error']}")
                 return False
             for s in SYMBOLS:
                 key = s["kraken_ticker"]
                 if key in data["result"]:
-                    price_cache[s["symbol"]] = float(data["result"][key]["c"][0])
-                    log.info(f"✅ {s['symbol']} = ${price_cache[s['symbol']]:,.2f}")
-            return len(price_cache) > 0
+                    temp_prices[s["symbol"]] = float(data["result"][key]["c"][0])
+                    log.info(f"✅ {s['symbol']} = ${temp_prices[s['symbol']]:,.2f}")
+            # Success — update both caches
+            price_cache = temp_prices
+            last_price_cache = temp_prices.copy()
+            return True
         except Exception as e:
             log.warning(f"Price fetch attempt {attempt+1} failed: {e}")
             if attempt < 2: time.sleep(2 ** attempt)
+    # All attempts failed — fall back to last known prices
+    if last_price_cache:
+        log.warning("⚠️ Using last known prices from previous tick")
+        price_cache = last_price_cache.copy()
+        return True
+    log.error("❌ No prices available at all")
     return False
 
 # ═══ RSI (5-min candles) ══════════════════════════════════════════════════════
@@ -106,7 +117,7 @@ def kraken_sign(urlpath, data):
 def kraken_post(urlpath, data):
     data['nonce'] = str(int(time.time() * 1000))
     headers = {'API-Key': KRAKEN_API_KEY, 'API-Sign': kraken_sign(urlpath, data)}
-    r = session.post(f"{KRAKEN_URL}{urlpath}", headers=headers, data=data, timeout=30)
+    r = session.post(f"{KRAKEN_URL}{urlpath}", headers=headers, data=data, timeout=45)
     r.raise_for_status()
     result = r.json()
     if result.get('error'):
@@ -176,7 +187,7 @@ def bot_tick():
     log.info(f"--- Tick {now} | {TRADING_MODE.upper()} | ${get_balance():,.2f} ---")
 
     if not fetch_all_prices():
-        log.error("Could not fetch prices, skipping tick")
+        log.error("No prices available — skipping tick")
         return
 
     for s in SYMBOLS:
