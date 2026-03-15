@@ -11,17 +11,19 @@ KRAKEN_API_KEY    = os.environ.get("KRAKEN_API_KEY", "")
 KRAKEN_API_SECRET = os.environ.get("KRAKEN_API_SECRET", "")
 KRAKEN_URL        = "https://api.kraken.com"
 
-STOP_LOSS    = 0.01    # 1% stop loss — tight scalping    # 2% stop loss
-TAKE_PROFIT  = 0.02    # 2% take profit — fast exits   # 3.5% take profit
+STOP_LOSS    = 0.01    # 1% stop loss — tight scalping
+TAKE_PROFIT  = 0.02    # 2% take profit — fast exits
 RSI_PERIOD   = 14
-RSI_BUY      = 45      # buy when RSI < 45 (dipping)
+RSI_BUY      = 50      # buy when RSI < 50 (shallower dip = more signals)
 RSI_SELL     = 60      # sell when RSI > 60 (recovering)
 RSI_INTERVAL = 1       # 1-minute candles — instant scalping
 TRADE_USDT   = 100     # $100 per trade — scalping mode
 
 SYMBOLS = [
-    {"symbol": "BTC", "kraken_ticker": "XXBTZUSD", "kraken_ohlc": "XBTUSD", "kraken_order": "XXBTZUSD"},
-    {"symbol": "ETH", "kraken_ticker": "XETHZUSD", "kraken_ohlc": "ETHUSD", "kraken_order": "XETHZUSD"},
+    {"symbol": "BTC", "kraken_ticker": "XXBTZUSD", "kraken_ohlc": "XBTUSD",  "kraken_order": "XXBTZUSD"},
+    {"symbol": "ETH", "kraken_ticker": "XETHZUSD", "kraken_ohlc": "ETHUSD",  "kraken_order": "XETHZUSD"},
+    {"symbol": "SOL", "kraken_ticker": "SOLUSD",   "kraken_ohlc": "SOLUSD",  "kraken_order": "SOLUSD"},
+    {"symbol": "XRP", "kraken_ticker": "XXRPZUSD", "kraken_ohlc": "XRPUSD",  "kraken_order": "XXRPZUSD"},
 ]
 
 positions     = {}
@@ -69,7 +71,7 @@ def fetch_all_prices():
     log.error("❌ No prices available at all")
     return False
 
-# ═══ RSI (5-min candles) ══════════════════════════════════════════════════════
+# ═══ RSI (1-min candles) ══════════════════════════════════════════════════════
 def get_rsi(kraken_ohlc, symbol):
     if symbol in rsi_cache:
         return rsi_cache[symbol]
@@ -244,7 +246,6 @@ def bot_tick():
             # ── ENTRY ─────────────────────────────────────────────────────────
             if symbol not in positions and rsi is not None and rsi < RSI_BUY:
                 log.info(f"🎯 BUY SIGNAL {symbol} RSI={rsi} < {RSI_BUY}")
-                # Dynamic qty = $50 / price (consistent for both paper and live)
                 qty = round(TRADE_USDT / price, 6)
                 if TRADING_MODE == "live":
                     kraken_place_order(s["kraken_order"], "buy", qty)
