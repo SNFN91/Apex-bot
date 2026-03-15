@@ -17,7 +17,7 @@ RSI_PERIOD   = 14
 RSI_BUY      = 45      # buy when RSI < 45 (dipping)
 RSI_SELL     = 60      # sell when RSI > 60 (recovering)
 RSI_INTERVAL = 1       # 1-minute candles — instant scalping
-TRADE_USDT   = 10      # $10 per trade (safe for live trading)
+TRADE_USDT   = 100     # $100 per trade — scalping mode
 
 SYMBOLS = [
     {"symbol": "BTC", "kraken_ticker": "XXBTZUSD", "kraken_ohlc": "XBTUSD", "kraken_order": "XXBTZUSD"},
