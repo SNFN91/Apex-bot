@@ -12,7 +12,7 @@ KRAKEN_URL        = "https://api.kraken.com"
 STOP_LOSS    = 0.02
 TAKE_PROFIT  = 0.035
 RSI_PERIOD   = 14
-RSI_OVERSOLD = 32
+RSI_OVERSOLD = 45
 TRADE_USDT   = 100
 
 # kraken_ticker = exact key returned by Kraken API
