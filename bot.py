@@ -11,25 +11,25 @@ KRAKEN_API_KEY    = os.environ.get("KRAKEN_API_KEY", "")
 KRAKEN_API_SECRET = os.environ.get("KRAKEN_API_SECRET", "")
 KRAKEN_URL        = "https://api.kraken.com"
 
-# ═══ DUAL STRATEGY CONFIG ════════════════════════════════════════════════════
+# ═══ DUAL STRATEGY CONFIG – FINAL VERSION ════════════════════════════════════
 STRATEGIES = {
     "SCALP": {
         "rsi_interval": 1,        # 1-minute candles
         "rsi_buy": 45,            # buy when RSI < 45
         "rsi_sell": 65,           # sell when RSI > 65
         "tp": 0.02,               # 2% take profit
-        "sl": 0.01,               # 1.0% stop loss (tight but safe)
+        "sl": 0.01,               # 1% stop loss
         "trade_size": 100,        # $100 per trade
         "label": "⚡ Scalping",
         "color": "#f0b90b"
     },
     "TREND": {
         "rsi_interval": 240,      # 4-hour candles
-        "rsi_buy": 50,            # buy when RSI < 50 (pullbacks)
+        "rsi_buy": 45,            # ⬅️ CHANGED: buy when RSI < 45 (was 50)
         "rsi_sell": 75,           # sell when RSI > 75
         "tp": 0.05,               # 5% take profit
-        "sl": 0.04,               # 4.0% stop loss
-        "trade_size": 200,        # $200 per trade
+        "sl": 0.04,               # 4% stop loss
+        "trade_size": 200,        # $200 per trade (paper)
         "label": "📈 Daily Trend",
         "color": "#22c55e"
     }
@@ -56,6 +56,16 @@ last_price_cache = {}
 rsi_cache        = {}
 last_rsi_cache   = {}
 active_strategy  = "SCALP"           # SCALP or TREND (for dashboard view)
+
+# Persistent storage path (Railway volume recommended)
+STATE_PATH = "/data/state.json"      # Use Railway volume mounted at /data
+BACKUP_PATH = "/data/state_backup.json"
+
+# Fallback to /tmp if volume not available
+if not os.path.exists("/data"):
+    STATE_PATH = "/tmp/state.json"
+    BACKUP_PATH = "/tmp/state_backup.json"
+    log.warning("⚠️ No /data volume found, using /tmp (ephemeral)")
 
 session = requests.Session()
 retries = Retry(total=5, backoff_factor=2, status_forcelist=[502, 503, 504])
@@ -262,7 +272,7 @@ def run_strategy(strategy_name, cfg, positions, trades, stats, buy_func, sell_fu
         except Exception as e:
             log.error(f"[{strategy_name}] Tick error {symbol}: {e}")
 
-# ═══ SAVE STATE ═══════════════════════════════════════════════════════════════
+# ═══ SAVE STATE – PERSISTENT STORAGE ════════════════════════════════════════
 def save_state():
     try:
         scalp_bal, trend_bal, total_bal = get_balances()
@@ -285,16 +295,60 @@ def save_state():
             "prices": price_cache,
             "updated": datetime.now(timezone.utc).isoformat()
         }
-        with open("/tmp/state.json", "w") as f:
+        
+        # Save to persistent location
+        with open(STATE_PATH, "w") as f:
             json.dump(state, f)
+        
+        # Save timestamped backup
+        backup_name = f"/data/state_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(backup_name, "w") as f:
+            json.dump(state, f)
+        
+        # Keep only last 50 backups
+        import glob
+        backups = sorted(glob.glob("/data/state_*.json"))
+        for old in backups[:-50]:
+            os.remove(old)
+            
     except Exception as e:
         log.error(f"save_state error: {e}")
+
+# ═══ LOAD STATE – RESTORE FROM PERSISTENT STORAGE ════════════════════════════
+def load_state():
+    global scalp_balance, trend_balance, scalp_positions, trend_positions
+    global scalp_trades, trend_trades, scalp_stats, trend_stats
+    
+    try:
+        if os.path.exists(STATE_PATH):
+            with open(STATE_PATH) as f:
+                state = json.load(f)
+                
+            scalp = state.get("scalp", {})
+            trend = state.get("trend", {})
+            
+            scalp_balance = scalp.get("balance", 10000.0)
+            scalp_positions = scalp.get("positions", {})
+            scalp_trades = scalp.get("trades", [])
+            scalp_stats = scalp.get("stats", {"pnl":0, "wins":0, "losses":0})
+            
+            trend_balance = trend.get("balance", 10000.0)
+            trend_positions = trend.get("positions", {})
+            trend_trades = trend.get("trades", [])
+            trend_stats = trend.get("stats", {"pnl":0, "wins":0, "losses":0})
+            
+            log.info(f"✅ Loaded state: Scalp ${scalp_balance:,.2f} Trend ${trend_balance:,.2f}")
+            return True
+    except Exception as e:
+        log.error(f"load_state error: {e}")
+    
+    return False
 
 # ═══ BOT TICK ════════════════════════════════════════════════════════════════
 def bot_tick():
     global rsi_cache, active_strategy
     rsi_cache = {}
-    # Read active strategy from dashboard (for display only)
+    # Read active strategy from dashboard
     try:
         if os.path.exists("/tmp/active_strategy.txt"):
             with open("/tmp/active_strategy.txt") as f:
@@ -309,7 +363,7 @@ def bot_tick():
         log.error("No prices available")
         return
 
-    # ALWAYS run both strategies regardless of view
+    # ALWAYS run both strategies
     run_strategy("SCALP", STRATEGIES["SCALP"], scalp_positions, scalp_trades, scalp_stats, paper_buy_scalp, paper_sell_scalp)
     run_strategy("TREND", STRATEGIES["TREND"], trend_positions, trend_trades, trend_stats, paper_buy_trend, paper_sell_trend)
 
@@ -317,10 +371,14 @@ def bot_tick():
 
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    log.info(f"⚡📈 APEX BOT DUAL STRATEGY | {TRADING_MODE.upper()} mode")
+    log.info(f"⚡📈 APEX BOT DUAL STRATEGY – FINAL VERSION")
     log.info(f"⚡ SCALP: RSI(1m) Buy<45 Sell>65 TP2% SL1% $100/trade")
-    log.info(f"📈 TREND: RSI(4h) Buy<50 Sell>75 TP5% SL4% $200/trade")
+    log.info(f"📈 TREND: RSI(4h) Buy<45 Sell>75 TP5% SL4% $200/trade")
     log.info(f"💰 Initial Balances: Scalp $10,000 | Trend $10,000 | Total $20,000")
+    
+    # Try to load existing state
+    if not load_state():
+        log.info("No existing state found, starting fresh")
     
     if TRADING_MODE == "live":
         if not KRAKEN_API_KEY or not KRAKEN_API_SECRET:
