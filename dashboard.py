@@ -6,7 +6,7 @@ from datetime import datetime
 STATE_FILE = "/data/state.json"  # Use persistent storage
 active_strategy = "SCALP"  # Default view
 
-# HTML Template (same as before, but with persistent storage)
+# HTML Template
 HTML = """<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8"/>
@@ -72,7 +72,7 @@ body{background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;min-
 .coin-price{font-size:15px;font-weight:500}
 .strategy-tag{font-size:8px;padding:2px 5px;border-radius:3px;margin-left:5px}
 .tag-scalp{background:rgba(240,185,11,.15);color:var(--gold)}
-.tag-trend{background:rgba(34,197,94,.15);color:var(--green)}
+.tag-daily{background:rgba(34,197,94,.15);color:var(--green)}
 
 .trades-section{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:16px}
 table{width:100%;border-collapse:collapse;font-size:11px}
@@ -227,6 +227,8 @@ def render(state, view_mode):
         tp = 0.02
         sl = 0.01
         desc = "1min RSI • Buy <45 • Sell >65 • TP 2% • SL 1% • $100/trade"
+        tag_text = "SCALP"
+        tag_class = "tag-scalp"
     else:
         data = trend
         strategy_name = "DAILY TREND"
@@ -235,6 +237,8 @@ def render(state, view_mode):
         tp = 0.05
         sl = 0.04
         desc = "4h RSI • Buy <45 • Sell >75 • TP 5% • SL 4% • $200/trade"
+        tag_text = "DAILY"
+        tag_class = "tag-daily"
 
     balance = data.get("balance", 10000)
     stats = data.get("stats", {"pnl": 0, "wins": 0, "losses": 0})
@@ -256,20 +260,26 @@ def render(state, view_mode):
     </div>
     '''
 
+    # FIXED: Coin cards with correct tags based on view mode
     coin_cards = ""
     for sym, cls in COIN_COLORS.items():
         price = prices.get(sym, 0)
         in_scalp = sym in scalp.get("positions", {})
         in_trend = sym in trend.get("positions", {})
-        tags = ""
-        if in_scalp:
-            tags += '<span class="strategy-tag tag-scalp">⚡SCALP</span> '
-        if in_trend:
-            tags += '<span class="strategy-tag tag-trend">📈TREND</span>'
+        tags = []
+        
+        # Only show tags for the CURRENT VIEW's positions
+        if view_mode == "SCALP" and in_scalp:
+            tags.append(f'<span class="strategy-tag {tag_class}">{strategy_icon}{tag_text}</span>')
+        elif view_mode == "TREND" and in_trend:
+            tags.append(f'<span class="strategy-tag {tag_class}">{strategy_icon}{tag_text}</span>')
+        
+        tags_html = " ".join(tags)
+        
         coin_cards += f'''<div class="coin-card">
           <div class="coin-name">
             <span class="coin-dot {cls}" style="display:inline-block;width:6px;height:6px;border-radius:50%"></span>
-            {sym}/USD {tags}
+            {sym}/USD {tags_html}
           </div>
           <div class="coin-price">${price:,.2f}</div>
         </div>'''
@@ -359,7 +369,7 @@ class Handler(BaseHTTPRequestHandler):
                 if backups:
                     with open(backups[-1]) as f:
                         state = json.load(f)
-                    log.info(f"Restored from backup: {backups[-1]}")
+                    print(f"Restored from backup: {backups[-1]}")
 
             body = render(state, active_strategy).encode()
             self.send_response(200)
