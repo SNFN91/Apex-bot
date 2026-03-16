@@ -3,26 +3,23 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 STATE_FILE = "/tmp/state.json"
+active_strategy = "SCALP"  # Default view
 
-# Global active strategy (shared with bot via file)
-active_strategy = "SCALP"  # Default to SCALP (BOTH removed)
-
+# HTML Template with placeholders
 HTML = """<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <meta http-equiv="refresh" content="30"/>
-<title>APEX BOT PRO</title>
+<title>APEX BOT • __ACTIVE_STRATEGY__</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Clash+Display:wght@600;700&display=swap" rel="stylesheet"/>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#070b12;--surface:#0d1421;--border:#1a2535;
-  --gold:#f0b90b;--green:#22c55e;--red:#ef4444;
-  --text:#e2e8f0;--muted:#4b5563;--dim:#1e2d45;
-}
+:root{--bg:#070b12;--surface:#0d1421;--border:#1a2535;--gold:#f0b90b;--green:#22c55e;--red:#ef4444;--text:#e2e8f0;--muted:#4b5563;--dim:#1e2d45;}
 body{background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;min-height:100vh}
 ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:var(--dim)}
+
+/* HEADER */
 .header{background:rgba(13,20,33,0.95);backdrop-filter:blur(10px);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
 .brand{display:flex;align-items:center;gap:12px}
 .brand-icon{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--gold),#e67e00);display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 0 20px rgba(240,185,11,0.3)}
@@ -32,10 +29,12 @@ body{background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;min-
 .live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(34,197,94,0.4)}50%{opacity:.7;box-shadow:0 0 0 6px rgba(34,197,94,0)}}
 .live-text{font-size:11px;color:var(--green);letter-spacing:.1em}
-.balance-chip{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 14px;font-size:13px}
-.balance-val{color:var(--gold);font-weight:500}
+.total-balance{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 14px;font-size:13px}
+.total-balance span{color:#a78bfa;font-weight:500}
+
+/* STRATEGY SWITCHER */
 .switcher{display:flex;gap:10px;padding:20px 24px;max-width:1200px;margin:0 auto}
-.strat-btn{flex:1;padding:14px 20px;border-radius:12px;border:2px solid var(--border);background:var(--surface);cursor:pointer;transition:all .2s;text-align:center;font-family:'DM Mono',monospace}
+.strat-btn{flex:1;padding:14px 20px;border-radius:12px;border:2px solid var(--border);background:var(--surface);cursor:pointer;transition:all .2s;text-align:center;font-family:'DM Mono',monospace;text-decoration:none;display:block}
 .strat-btn:hover{transform:translateY(-2px)}
 .strat-btn.active-scalp{border-color:var(--gold);background:rgba(240,185,11,0.08);box-shadow:0 0 20px rgba(240,185,11,0.15)}
 .strat-btn.active-trend{border-color:var(--green);background:rgba(34,197,94,0.08);box-shadow:0 0 20px rgba(34,197,94,0.15)}
@@ -43,50 +42,57 @@ body{background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;min-
 .btn-label{font-size:13px;font-weight:500;letter-spacing:.05em}
 .btn-desc{font-size:10px;color:var(--muted);margin-top:3px}
 .btn-active-badge{display:inline-block;margin-top:6px;font-size:9px;padding:2px 8px;border-radius:4px;letter-spacing:.1em}
+
+/* BODY */
 .body{padding:0 24px 24px;max-width:1200px;margin:0 auto}
-.stats-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px}
-@media(min-width:600px){.stats-grid{grid-template-columns:repeat(4,1fr)}}
+
+/* STRATEGY HEADER */
+.strategy-header{display:flex;align-items:center;gap:12px;margin-bottom:20px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:12px}
+.strategy-icon{font-size:28px}
+.strategy-title{font-family:'Clash Display',sans-serif;font-size:20px}
+.strategy-desc{font-size:11px;color:var(--muted);margin-top:4px}
+
+/* STATS GRID */
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px}
 .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
 .stat-label{font-size:9px;color:var(--muted);letter-spacing:.15em;margin-bottom:6px}
-.stat-val{font-family:'Clash Display',sans-serif;font-size:22px;font-weight:700}
+.stat-val{font-family:'Clash Display',sans-serif;font-size:24px;font-weight:700}
 .stat-sub{font-size:10px;color:var(--muted);margin-top:4px}
-.dual-panel{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
-@media(max-width:768px){.dual-panel{grid-template-columns:1fr}}
-.strategy-panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
-.panel-header{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
-.panel-title{font-family:'Clash Display',sans-serif;font-size:14px;letter-spacing:.05em}
-.panel-badge{font-size:10px;padding:3px 10px;border-radius:6px;letter-spacing:.08em}
-.scalp-badge{background:rgba(240,185,11,.15);color:var(--gold)}
-.trend-badge{background:rgba(34,197,94,.15);color:var(--green)}
-.panel-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border)}
-.panel-stat{background:var(--surface);padding:12px;text-align:center}
-.panel-stat-label{font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:4px}
-.panel-stat-val{font-size:15px;font-weight:600}
-.positions-list{padding:12px 16px}
-.position-item{background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
-.pos-symbol{font-weight:500;font-size:13px}
-.pos-entry{font-size:10px;color:var(--muted);margin-top:2px}
-.pos-pnl{font-size:13px;font-weight:600}
+
+/* POSITIONS */
+.positions-section{background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:24px;overflow:hidden}
+.section-header{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.section-title{font-family:'Clash Display',sans-serif;font-size:14px;letter-spacing:.05em}
+.position-item{background:rgba(255,255,255,0.02);border-bottom:1px solid var(--border);padding:12px 16px;display:flex;justify-content:space-between;align-items:center}
+.position-item:last-child{border-bottom:none}
+.pos-symbol{font-weight:500;font-size:14px}
+.pos-entry{font-size:11px;color:var(--muted);margin-top:2px}
+.pos-pnl{font-size:14px;font-weight:600}
 .no-positions{padding:20px;text-align:center;color:var(--dim);font-size:12px}
-.coin-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 16px}
+
+/* COIN GRID */
+.coin-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:12px 16px}
 .coin-card{background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:8px;padding:10px}
 .coin-name{font-size:11px;color:var(--muted);margin-bottom:4px;display:flex;align-items:center;gap:5px}
 .coin-dot{width:6px;height:6px;border-radius:50%}
 .coin-price{font-size:15px;font-weight:500}
-.trades-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
-@media(max-width:768px){.trades-grid{grid-template-columns:1fr}}
-.trades-section{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
-.trades-header{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
-.trades-title{font-family:'Clash Display',sans-serif;font-size:14px}
+.strategy-tag{font-size:8px;padding:2px 5px;border-radius:3px;margin-left:5px}
+.tag-scalp{background:rgba(240,185,11,.15);color:var(--gold)}
+.tag-trend{background:rgba(34,197,94,.15);color:var(--green)}
+
+/* TRADES TABLE */
+.trades-section{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:16px}
 table{width:100%;border-collapse:collapse;font-size:11px}
 th{padding:8px 14px;text-align:left;color:var(--muted);font-size:10px;background:rgba(0,0,0,0.2);letter-spacing:.08em}
 td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
 .buy-badge{color:var(--green);background:rgba(34,197,94,.1);padding:2px 7px;border-radius:3px;font-size:10px;font-weight:500}
 .sell-badge{color:var(--red);background:rgba(239,68,68,.1);padding:2px 7px;border-radius:3px;font-size:10px;font-weight:500}
-.scalp-tag{color:var(--gold);background:rgba(240,185,11,.1);padding:1px 6px;border-radius:3px;font-size:9px}
-.trend-tag{color:var(--green);background:rgba(34,197,94,.1);padding:1px 6px;border-radius:3px;font-size:9px}
-.footer{padding:10px 0;display:flex;justify-content:space-between;font-size:10px;color:var(--dim);flex-wrap:wrap;gap:6px}
+
+/* FOOTER */
+.footer{padding:16px 0 8px;display:flex;justify-content:space-between;font-size:10px;color:var(--dim);flex-wrap:wrap;gap:6px;border-top:1px solid var(--border);margin-top:16px}
 .refresh-note{text-align:center;font-size:9px;color:var(--dim);padding-bottom:8px}
+
+/* COIN COLORS */
 .btc{background:#f7931a}.eth{background:#627eea}.sol{background:#9945ff}.xrp{background:#346aa9}
 </style>
 </head>
@@ -94,7 +100,7 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
 
 <div class="header">
   <div class="brand">
-    <div class="brand-icon">⚡</div>
+    <div class="brand-icon">⚡📈</div>
     <div>
       <div class="brand-name">APEX BOT PRO</div>
       <div class="brand-sub">DUAL STRATEGY • PAPER TRADING</div>
@@ -105,143 +111,100 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
       <div class="live-dot"></div>
       <span class="live-text">LIVE</span>
     </div>
-    <div class="balance-chip">Balance: <span class="balance-val">__BALANCE__</span></div>
+    <div class="total-balance">Total: <span>__TOTAL_BALANCE__</span></div>
   </div>
 </div>
 
+<!-- STRATEGY SWITCHER - TWO BUTTONS ONLY -->
 <div class="switcher">
-  <a href="/set_strategy?mode=SCALP" style="text-decoration:none;flex:1">
-    <div class="strat-btn __SCALP_ACTIVE__">
-      <div class="btn-icon">⚡</div>
-      <div class="btn-label" style="color:#f0b90b">SCALPING</div>
-      <div class="btn-desc">1min RSI • $100/trade • TP 2% • SL 1.5%</div>
-      __SCALP_BADGE__
-    </div>
+  <a href="/set_strategy?mode=SCALP" class="strat-btn __SCALP_ACTIVE__">
+    <div class="btn-icon">⚡</div>
+    <div class="btn-label" style="color:#f0b90b">SCALPING</div>
+    <div class="btn-desc">1min RSI • $100 • TP2% SL1%</div>
+    __SCALP_BADGE__
   </a>
-  <a href="/set_strategy?mode=TREND" style="text-decoration:none;flex:1">
-    <div class="strat-btn __TREND_ACTIVE__">
-      <div class="btn-icon">📈</div>
-      <div class="btn-label" style="color:#22c55e">DAILY TREND</div>
-      <div class="btn-desc">4h RSI • $200/trade • TP 5% • SL 2.5%</div>
-      __TREND_BADGE__
-    </div>
+  <a href="/set_strategy?mode=TREND" class="strat-btn __TREND_ACTIVE__">
+    <div class="btn-icon">📈</div>
+    <div class="btn-label" style="color:#22c55e">DAILY TREND</div>
+    <div class="btn-desc">4h RSI • $200 • TP5% SL4%</div>
+    __TREND_BADGE__
   </a>
 </div>
 
 <div class="body">
+  <!-- DYNAMIC CONTENT - FILLED BY RENDER FUNCTION -->
+  __STRATEGY_HEADER__
+  
+  <!-- STATS CARDS -->
   <div class="stats-grid">
     <div class="stat-card">
-      <div class="stat-label">PAPER BALANCE</div>
-      <div class="stat-val" style="color:var(--gold)">__BALANCE__</div>
+      <div class="stat-label">__STRATEGY_NAME__ BALANCE</div>
+      <div class="stat-val" style="color:__STRATEGY_COLOR__">__BALANCE__</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">TOTAL P&L</div>
-      <div class="stat-val" style="color:__TOTAL_PNL_COLOR__">__TOTAL_PNL__</div>
+      <div class="stat-val" style="color:__PNL_COLOR__">__PNL__</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">OPEN POSITIONS</div>
-      <div class="stat-val" style="color:#a78bfa">__OPEN_POS__</div>
-      <div class="stat-sub">__SCALP_POS__ scalp · __TREND_POS__ trend</div>
+      <div class="stat-val" style="color:#a78bfa">__OPEN_POSITIONS__</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">TOTAL TRADES</div>
-      <div class="stat-val" style="color:#60a5fa">__TOTAL_TRADES__</div>
-      <div class="stat-sub">__TOTAL_WINS__W / __TOTAL_LOSSES__L</div>
+      <div class="stat-label">WIN RATE</div>
+      <div class="stat-val" style="color:#60a5fa">__WIN_RATE__</div>
+      <div class="stat-sub">__WINS__W / __LOSSES__L</div>
     </div>
   </div>
 
-  <div class="dual-panel">
-    <div class="strategy-panel">
-      <div class="panel-header">
-        <div class="panel-title" style="color:var(--gold)">⚡ SCALPING</div>
-        <span class="panel-badge scalp-badge">RSI 1min • TP 2% • SL 1.5%</span>
-      </div>
-      <div class="panel-stats">
-        <div class="panel-stat">
-          <div class="panel-stat-label">P&L</div>
-          <div class="panel-stat-val" style="color:__SCALP_PNL_COLOR__">__SCALP_PNL__</div>
-        </div>
-        <div class="panel-stat">
-          <div class="panel-stat-label">WIN RATE</div>
-          <div class="panel-stat-val" style="color:#60a5fa">__SCALP_WR__</div>
-        </div>
-        <div class="panel-stat">
-          <div class="panel-stat-label">TRADES</div>
-          <div class="panel-stat-val">__SCALP_TRADES__</div>
-        </div>
-      </div>
-      <div class="positions-list">__SCALP_POSITIONS__</div>
+  <!-- OPEN POSITIONS -->
+  <div class="positions-section">
+    <div class="section-header">
+      <div class="section-title">OPEN POSITIONS (__OPEN_POSITIONS__)</div>
+      <span style="font-size:10px;color:var(--muted)">TP: __TP__% • SL: __SL__%</span>
     </div>
-
-    <div class="strategy-panel">
-      <div class="panel-header">
-        <div class="panel-title" style="color:var(--green)">📈 DAILY TREND</div>
-        <span class="panel-badge trend-badge">RSI 4h • TP 5% • SL 2.5%</span>
-      </div>
-      <div class="panel-stats">
-        <div class="panel-stat">
-          <div class="panel-stat-label">P&L</div>
-          <div class="panel-stat-val" style="color:__TREND_PNL_COLOR__">__TREND_PNL__</div>
-        </div>
-        <div class="panel-stat">
-          <div class="panel-stat-label">WIN RATE</div>
-          <div class="panel-stat-val" style="color:#60a5fa">__TREND_WR__</div>
-        </div>
-        <div class="panel-stat">
-          <div class="panel-stat-label">TRADES</div>
-          <div class="panel-stat-val">__TREND_TRADES__</div>
-        </div>
-      </div>
-      <div class="positions-list">__TREND_POSITIONS__</div>
+    <div class="positions-list">
+      __POSITIONS_LIST__
     </div>
   </div>
 
-  <div class="strategy-panel" style="margin-bottom:16px">
-    <div class="panel-header">
-      <div class="panel-title">📊 LIVE PRICES</div>
+  <!-- LIVE PRICES -->
+  <div class="positions-section">
+    <div class="section-header">
+      <div class="section-title">📊 LIVE PRICES</div>
       <span style="font-size:10px;color:var(--muted)">Updated: __UPDATED__</span>
     </div>
-    <div class="coin-grid">__COIN_CARDS__</div>
+    <div class="coin-grid">
+      __COIN_CARDS__
+    </div>
   </div>
 
-  <div class="trades-grid">
-    <div class="trades-section">
-      <div class="trades-header">
-        <div class="trades-title" style="color:var(--gold)">⚡ SCALP ORDER HISTORY (__SCALP_TABLE_COUNT__)</div>
-      </div>
-      <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
-        <table>
-          <thead><tr><th>TIME</th><th>PAIR</th><th>SIDE</th><th>PRICE</th><th>P&L</th><th>REASON</th></tr></thead>
-          <tbody>__SCALP_TRADE_ROWS__</tbody>
-        </table>
-      </div>
+  <!-- ORDER HISTORY -->
+  <div class="trades-section">
+    <div class="section-header">
+      <div class="section-title">📋 ORDER HISTORY (__TRADE_COUNT__)</div>
     </div>
-    <div class="trades-section">
-      <div class="trades-header">
-        <div class="trades-title" style="color:var(--green)">📈 TREND ORDER HISTORY (__TREND_TABLE_COUNT__)</div>
-      </div>
-      <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
-        <table>
-          <thead><tr><th>TIME</th><th>PAIR</th><th>SIDE</th><th>PRICE</th><th>P&L</th><th>REASON</th></tr></thead>
-          <tbody>__TREND_TRADE_ROWS__</tbody>
-        </table>
-      </div>
+    <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
+      <table>
+        <thead><tr><th>TIME</th><th>PAIR</th><th>SIDE</th><th>PRICE</th><th>P&L</th><th>REASON</th></tr></thead>
+        <tbody>__TRADE_ROWS__</tbody>
+      </table>
     </div>
   </div>
 
   <div class="footer">
-    <span>⚡ Scalp: RSI(1m) Buy&lt;45 Sell&gt;60 TP2% SL1.5% $100</span>
-    <span>📈 Trend: RSI(4h) Buy&lt;40 Sell&gt;65 TP5% SL2.5% $200</span>
-    <span style="color:var(--gold)">Viewing: __ACTIVE_STRATEGY__</span>
+    <span>⚡ Scalp: RSI(1m) Buy<45 Sell>65 TP2% SL1% $100</span>
+    <span>📈 Trend: RSI(4h) Buy<50 Sell>75 TP5% SL4% $200</span>
+    <span style="color:__ACTIVE_COLOR__">Active: __ACTIVE_STRATEGY__</span>
   </div>
   <div class="refresh-note">⟳ Auto-refreshes every 30 seconds</div>
 </div>
+
 </body></html>"""
 
 COIN_COLORS = {"BTC": "btc", "ETH": "eth", "SOL": "sol", "XRP": "xrp"}
 
 def pnl_color(v): return "#22c55e" if v >= 0 else "#ef4444"
-def win_rate(w, l): return f"{w/(w+l)*100:.0f}%" if (w+l) > 0 else "—"
+def win_rate(w, l): return f"{w/(w+l)*100:.1f}%" if (w+l) > 0 else "—"
 
 def render_positions(positions, prices, tp, sl):
     if not positions:
@@ -254,7 +217,7 @@ def render_positions(positions, prices, tp, sl):
         html += f'''<div class="position-item">
           <div>
             <div class="pos-symbol">
-              <span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;background:{'#f7931a' if sym=='BTC' else '#627eea' if sym=='ETH' else '#9945ff' if sym=='SOL' else '#346aa9'}"></span>
+              <span class="coin-dot {COIN_COLORS.get(sym,'btc')}" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px"></span>
               {sym}/USD
             </div>
             <div class="pos-entry">Entry: ${pos["entry"]:,.2f} | TP: ${pos["entry"]*(1+tp):,.2f} | SL: ${pos["entry"]*(1-sl):,.2f}</div>
@@ -263,15 +226,82 @@ def render_positions(positions, prices, tp, sl):
         </div>'''
     return html
 
-def make_trade_rows(trades, empty_msg):
-    rows = ""
-    for t in reversed(trades[-30:]):
+def render(state, view_mode):
+    # Extract data
+    scalp = state.get("scalp", {})
+    trend = state.get("trend", {})
+    prices = state.get("prices", {})
+    total_balance = state.get("total_balance", 20000)
+    updated = state.get("updated", "—")[:19].replace("T", " ")
+
+    # Choose which strategy to display
+    if view_mode == "SCALP":
+        data = scalp
+        strategy_name = "SCALPING"
+        strategy_icon = "⚡"
+        color = "#f0b90b"
+        tp = 0.02
+        sl = 0.01
+        desc = "1min RSI • Buy <45 • Sell >65 • TP 2% • SL 1% • $100/trade"
+    else:  # TREND
+        data = trend
+        strategy_name = "DAILY TREND"
+        strategy_icon = "📈"
+        color = "#22c55e"
+        tp = 0.05
+        sl = 0.04
+        desc = "4h RSI • Buy <50 • Sell >75 • TP 5% • SL 4% • $200/trade"
+
+    balance = data.get("balance", 10000)
+    stats = data.get("stats", {"pnl": 0, "wins": 0, "losses": 0})
+    positions = data.get("positions", {})
+    trades = data.get("trades", [])
+
+    # Calculate values
+    pnl = stats["pnl"]
+    wins = stats["wins"]
+    losses = stats["losses"]
+    total_trades = wins + losses
+
+    # Strategy header
+    strategy_header = f'''
+    <div class="strategy-header" style="border-left:4px solid {color}">
+        <div class="strategy-icon">{strategy_icon}</div>
+        <div>
+            <div class="strategy-title" style="color:{color}">{strategy_name}</div>
+            <div class="strategy-desc">{desc}</div>
+        </div>
+    </div>
+    '''
+
+    # Coin cards with strategy tags
+    coin_cards = ""
+    for sym, cls in COIN_COLORS.items():
+        price = prices.get(sym, 0)
+        in_scalp = sym in scalp.get("positions", {})
+        in_trend = sym in trend.get("positions", {})
+        tags = ""
+        if in_scalp:
+            tags += '<span class="strategy-tag tag-scalp">⚡SCALP</span> '
+        if in_trend:
+            tags += '<span class="strategy-tag tag-trend">📈TREND</span>'
+        coin_cards += f'''<div class="coin-card">
+          <div class="coin-name">
+            <span class="coin-dot {cls}" style="display:inline-block;width:6px;height:6px;border-radius:50%"></span>
+            {sym}/USD {tags}
+          </div>
+          <div class="coin-price">${price:,.2f}</div>
+        </div>'''
+
+    # Trade rows
+    trade_rows = ""
+    for t in trades[-30:]:
         pnl_v = t.get("pnl")
-        pnl_str = f'+${pnl_v:.2f}' if pnl_v is not None and pnl_v >= 0 else (f'${pnl_v:.2f}' if pnl_v is not None else '—')
+        pnl_str = f'+${pnl_v:.2f}' if pnl_v is not None and pnl_v >= 0 else (f'-${abs(pnl_v):.2f}' if pnl_v is not None and pnl_v < 0 else '—')
         pnl_c = pnl_color(pnl_v) if pnl_v is not None else "#4b5563"
         side_cls = "buy-badge" if t["side"] == "BUY" else "sell-badge"
         time_str = t.get("time", "")[:19].replace("T", " ")
-        rows += f'''<tr>
+        trade_rows += f'''<tr>
           <td style="color:var(--muted)">{time_str}</td>
           <td style="font-weight:500">{t.get("symbol","")}</td>
           <td><span class="{side_cls}">{t["side"]}</span></td>
@@ -279,72 +309,38 @@ def make_trade_rows(trades, empty_msg):
           <td style="color:{pnl_c}">{pnl_str}</td>
           <td style="color:var(--muted);font-size:10px">{t.get("reason","")}</td>
         </tr>'''
-    if not rows:
-        rows = f'<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:24px">{empty_msg}</td></tr>'
-    return rows
 
-def render(state, active_strat):
-    bal = state.get("balance", 10000)
-    scalp_stats = state.get("scalp_stats", {"pnl":0,"wins":0,"losses":0})
-    trend_stats = state.get("trend_stats", {"pnl":0,"wins":0,"losses":0})
-    scalp_pos = state.get("scalp_positions", {})
-    trend_pos = state.get("trend_positions", {})
-    scalp_trades = state.get("scalp_trades", [])
-    trend_trades = state.get("trend_trades", [])
-    prices = state.get("prices", {})
-    updated = state.get("updated", "—")[:19].replace("T", " ")
+    if not trade_rows:
+        trade_rows = f'<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:24px">No {strategy_name.lower()} trades yet — bot is scanning</td></tr>'
 
-    total_pnl = scalp_stats["pnl"] + trend_stats["pnl"]
-    total_wins = scalp_stats["wins"] + trend_stats["wins"]
-    total_losses = scalp_stats["losses"] + trend_stats["losses"]
-    total_trades = len(scalp_trades) + len(trend_trades)
+    # Button states
+    scalp_active = "active-scalp" if view_mode == "SCALP" else ""
+    trend_active = "active-trend" if view_mode == "TREND" else ""
+    scalp_badge = '<div class="btn-active-badge" style="background:rgba(240,185,11,.2);color:#f0b90b">● ACTIVE</div>' if view_mode == "SCALP" else ""
+    trend_badge = '<div class="btn-active-badge" style="background:rgba(34,197,94,.2);color:#22c55e">● ACTIVE</div>' if view_mode == "TREND" else ""
 
-    scalp_active = "active-scalp" if active_strat == "SCALP" else ""
-    trend_active = "active-trend" if active_strat == "TREND" else ""
-    scalp_badge = '<div class="btn-active-badge" style="background:rgba(240,185,11,.2);color:#f0b90b">● VIEWING</div>' if active_strat == "SCALP" else ""
-    trend_badge = '<div class="btn-active-badge" style="background:rgba(34,197,94,.2);color:#22c55e">● VIEWING</div>' if active_strat == "TREND" else ""
-
-    coin_cards = ""
-    for sym, cls in COIN_COLORS.items():
-        price = prices.get(sym, 0)
-        tags = ""
-        if sym in scalp_pos: tags += '<span class="scalp-tag">⚡</span> '
-        if sym in trend_pos: tags += '<span class="trend-tag">📈</span>'
-        coin_cards += f'''<div class="coin-card">
-          <div class="coin-name">
-            <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:{'#f7931a' if sym=='BTC' else '#627eea' if sym=='ETH' else '#9945ff' if sym=='SOL' else '#346aa9'}"></span>
-            {sym}/USD {tags}
-          </div>
-          <div class="coin-price">${price:,.2f}</div>
-        </div>'''
-
+    # Fill template
     html = HTML
-    html = html.replace("__BALANCE__", f"${bal:,.2f}")
-    html = html.replace("__TOTAL_PNL__", f"{'+' if total_pnl>=0 else ''}${total_pnl:.2f}")
-    html = html.replace("__TOTAL_PNL_COLOR__", pnl_color(total_pnl))
-    html = html.replace("__OPEN_POS__", str(len(scalp_pos)+len(trend_pos)))
-    html = html.replace("__SCALP_POS__", str(len(scalp_pos)))
-    html = html.replace("__TREND_POS__", str(len(trend_pos)))
-    html = html.replace("__TOTAL_TRADES__", str(total_trades))
-    html = html.replace("__TOTAL_WINS__", str(total_wins))
-    html = html.replace("__TOTAL_LOSSES__", str(total_losses))
-    html = html.replace("__SCALP_PNL__", f"{'+' if scalp_stats['pnl']>=0 else ''}${scalp_stats['pnl']:.2f}")
-    html = html.replace("__SCALP_PNL_COLOR__", pnl_color(scalp_stats['pnl']))
-    html = html.replace("__SCALP_WR__", win_rate(scalp_stats['wins'], scalp_stats['losses']))
-    html = html.replace("__SCALP_TRADES__", str(scalp_stats['wins']+scalp_stats['losses']))
-    html = html.replace("__TREND_PNL__", f"{'+' if trend_stats['pnl']>=0 else ''}${trend_stats['pnl']:.2f}")
-    html = html.replace("__TREND_PNL_COLOR__", pnl_color(trend_stats['pnl']))
-    html = html.replace("__TREND_WR__", win_rate(trend_stats['wins'], trend_stats['losses']))
-    html = html.replace("__TREND_TRADES__", str(trend_stats['wins']+trend_stats['losses']))
-    html = html.replace("__SCALP_POSITIONS__", render_positions(scalp_pos, prices, 0.02, 0.015))
-    html = html.replace("__TREND_POSITIONS__", render_positions(trend_pos, prices, 0.05, 0.025))
+    html = html.replace("__TOTAL_BALANCE__", f"${total_balance:,.2f}")
+    html = html.replace("__STRATEGY_HEADER__", strategy_header)
+    html = html.replace("__STRATEGY_NAME__", strategy_name)
+    html = html.replace("__STRATEGY_COLOR__", color)
+    html = html.replace("__BALANCE__", f"${balance:,.2f}")
+    html = html.replace("__PNL__", f"{'+' if pnl >= 0 else ''}${pnl:.2f}")
+    html = html.replace("__PNL_COLOR__", pnl_color(pnl))
+    html = html.replace("__OPEN_POSITIONS__", str(len(positions)))
+    html = html.replace("__WIN_RATE__", win_rate(wins, losses))
+    html = html.replace("__WINS__", str(wins))
+    html = html.replace("__LOSSES__", str(losses))
+    html = html.replace("__TP__", str(int(tp*100)))
+    html = html.replace("__SL__", str(int(sl*100)))
+    html = html.replace("__POSITIONS_LIST__", render_positions(positions, prices, tp, sl))
     html = html.replace("__COIN_CARDS__", coin_cards)
-    html = html.replace("__SCALP_TABLE_COUNT__", str(len(scalp_trades)))
-    html = html.replace("__SCALP_TRADE_ROWS__", make_trade_rows(scalp_trades, "No scalp trades yet — bot is scanning"))
-    html = html.replace("__TREND_TABLE_COUNT__", str(len(trend_trades)))
-    html = html.replace("__TREND_TRADE_ROWS__", make_trade_rows(trend_trades, "No trend trades yet — waiting for 4h RSI setup"))
+    html = html.replace("__TRADE_COUNT__", str(total_trades))
+    html = html.replace("__TRADE_ROWS__", trade_rows)
     html = html.replace("__UPDATED__", updated)
-    html = html.replace("__ACTIVE_STRATEGY__", active_strat)
+    html = html.replace("__ACTIVE_STRATEGY__", view_mode)
+    html = html.replace("__ACTIVE_COLOR__", color)
     html = html.replace("__SCALP_ACTIVE__", scalp_active)
     html = html.replace("__TREND_ACTIVE__", trend_active)
     html = html.replace("__SCALP_BADGE__", scalp_badge)
@@ -353,9 +349,12 @@ def render(state, active_strat):
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
+    
     def do_GET(self):
         global active_strategy
         parsed = urlparse(self.path)
+
+        # Handle strategy switching
         if parsed.path == "/set_strategy":
             params = parse_qs(parsed.query)
             mode = params.get("mode", ["SCALP"])[0].upper()
@@ -367,20 +366,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Location", "/")
             self.end_headers()
             return
+
+        # Serve dashboard
         try:
             if os.path.exists("/tmp/active_strategy.txt"):
                 with open("/tmp/active_strategy.txt") as f:
-                    val = f.read().strip()
-                    if val in ("SCALP", "TREND"):
-                        active_strategy = val
-            else:
-                active_strategy = "SCALP"
-                with open("/tmp/active_strategy.txt", "w") as f:
-                    f.write("SCALP")
+                    active_strategy = f.read().strip()
+
             state = {}
             if os.path.exists(STATE_FILE):
                 with open(STATE_FILE) as f:
                     state = json.load(f)
+
             body = render(state, active_strategy).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
