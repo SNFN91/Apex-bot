@@ -1,17 +1,28 @@
 import os, time, hmac, hashlib, requests, json, logging, base64, urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 log = logging.getLogger(__name__)
 
+# ═══ CONFIG ═══════════════════════════════════════════════════════════════════
 TRADING_MODE      = os.environ.get("TRADING_MODE", "paper")
 KRAKEN_API_KEY    = os.environ.get("KRAKEN_API_KEY", "")
 KRAKEN_API_SECRET = os.environ.get("KRAKEN_API_SECRET", "")
 KRAKEN_URL        = "https://api.kraken.com"
 
-# ═══ DUAL STRATEGY CONFIG – FINAL VERSION WITH BOLLINGER BANDS ═══════════════
+# ═══ SAFETY FEATURES ══════════════════════════════════════════════════════════
+MAX_DAILY_LOSS = 10.0           # Stop trading after losing $10 in a day
+MAX_POSITIONS = 4                # Never hold more than 4 positions total
+daily_loss = 0.0                 # Track today's losses
+last_reset_day = None            # Reset daily at midnight
+
+# ═══ TELEGRAM CONFIG (Optional – set env vars to enable) ═════════════════════
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+# ═══ DUAL STRATEGY CONFIG ════════════════════════════════════════════════════
 STRATEGIES = {
     "SCALP": {
         "rsi_interval": 1,        # 1-minute candles
@@ -25,7 +36,7 @@ STRATEGIES = {
     },
     "TREND": {
         "rsi_interval": 240,      # 4-hour candles
-        "rsi_buy": 45,            # buy when RSI < 45 (was 50)
+        "rsi_buy": 45,            # buy when RSI < 45
         "rsi_sell": 75,           # sell when RSI > 75
         "tp": 0.05,               # 5% take profit
         "sl": 0.04,               # 4% stop loss
@@ -49,19 +60,18 @@ scalp_trades     = []
 trend_trades     = []
 scalp_stats      = {"pnl": 0.0, "wins": 0, "losses": 0}
 trend_stats      = {"pnl": 0.0, "wins": 0, "losses": 0}
-scalp_balance    = 10000.0          # Separate balance for scalp
-trend_balance    = 10000.0          # Separate balance for trend
+scalp_balance    = 10000.0
+trend_balance    = 10000.0
 price_cache      = {}
 last_price_cache = {}
 rsi_cache        = {}
 last_rsi_cache   = {}
-active_strategy  = "SCALP"           # SCALP or TREND (for dashboard view)
+active_strategy  = "SCALP"
 
-# Persistent storage path (Railway volume recommended)
-STATE_PATH = "/data/state.json"      # Use Railway volume mounted at /data
+# Persistent storage path
+STATE_PATH = "/data/state.json"
 BACKUP_PATH = "/data/state_backup.json"
 
-# Fallback to /tmp if volume not available
 if not os.path.exists("/data"):
     STATE_PATH = "/tmp/state.json"
     BACKUP_PATH = "/tmp/state_backup.json"
@@ -70,6 +80,52 @@ if not os.path.exists("/data"):
 session = requests.Session()
 retries = Retry(total=5, backoff_factor=2, status_forcelist=[502, 503, 504])
 session.mount('https://', HTTPAdapter(max_retries=retries))
+
+# ═══ TELEGRAM ALERTS ══════════════════════════════════════════════════════════
+def send_telegram(message):
+    """Send message to Telegram if configured"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+        requests.post(url, data=data, timeout=5)
+    except Exception as e:
+        log.error(f"Telegram error: {e}")
+
+# ═══ SAFETY CHECKS ═══════════════════════════════════════════════════════════
+def check_safety_limits():
+    """Check all safety limits before trading"""
+    global daily_loss, last_reset_day
+    
+    # 1. Emergency kill switch
+    if os.path.exists("/tmp/STOP_TRADING"):
+        log.warning("🛑 Emergency stop file detected – trading paused")
+        return False
+    
+    # 2. Daily loss limit (reset at midnight)
+    today = date.today().isoformat()
+    if last_reset_day != today:
+        daily_loss = 0.0
+        last_reset_day = today
+        log.info(f"📅 Daily loss counter reset: ${daily_loss:.2f}")
+    
+    # Calculate total loss today from stats
+    total_today_loss = abs(min(0, scalp_stats["pnl"] + trend_stats["pnl"] - 
+                               (scalp_stats.get("pnl_yesterday", 0) + trend_stats.get("pnl_yesterday", 0))))
+    
+    if total_today_loss > MAX_DAILY_LOSS:
+        log.warning(f"🛑 Daily loss limit reached (${total_today_loss:.2f} > ${MAX_DAILY_LOSS}) – stopping trades")
+        send_telegram(f"⚠️ <b>Daily loss limit reached</b>\nLoss: ${total_today_loss:.2f}\nTrading paused until midnight")
+        return False
+    
+    # 3. Max positions cap
+    total_positions = len(scalp_positions) + len(trend_positions)
+    if total_positions >= MAX_POSITIONS:
+        log.info(f"⏳ Max positions reached ({total_positions}/{MAX_POSITIONS}) – waiting for exits")
+        return False
+    
+    return True
 
 # ═══ PRICES ══════════════════════════════════════════════════════════════════
 def fetch_all_prices():
@@ -136,41 +192,21 @@ def calc_rsi(prices):
     if al == 0: return 100
     return round(100 - 100/(1 + ag/al), 2)
 
-# ═══ BOLLINGER BANDS ════════════════════════════════════════════════════════
 def calculate_bollinger_bands(prices, period=20, std_dev=2):
-    """
-    Calculate Bollinger Bands.
-    Returns: (lower_band, middle_band, upper_band)
-    """
     if len(prices) < period:
         return None, None, None
-    
-    # Use last 'period' prices
     recent = prices[-period:]
-    
-    # Calculate middle band (SMA)
     middle_band = sum(recent) / period
-    
-    # Calculate standard deviation
     variance = sum((x - middle_band) ** 2 for x in recent) / period
     std = variance ** 0.5
-    
-    # Calculate upper and lower bands
     lower_band = middle_band - (std_dev * std)
     upper_band = middle_band + (std_dev * std)
-    
     return lower_band, middle_band, upper_band
 
 def is_lower_band_touch(price, prices, threshold_pct=0.01):
-    """
-    Check if price is at or below lower Bollinger Band.
-    threshold_pct = 1% tolerance (price can be up to 1% below band)
-    """
     lower_band, middle, upper = calculate_bollinger_bands(prices)
     if lower_band is None:
         return False
-    
-    # Price touches or goes below lower band (with 1% tolerance)
     if price <= lower_band * (1 + threshold_pct):
         return True
     return False
@@ -205,7 +241,7 @@ def kraken_place_order(pair, side, qty):
         "pair": pair, "type": side, "ordertype": "market", "volume": str(round(qty, 6))
     })
 
-# ═══ PAPER TRADING – SEPARATE BALANCES ═══════════════════════════════════════
+# ═══ PAPER TRADING ════════════════════════════════════════════════════════════
 def paper_buy_scalp(symbol, price):
     global scalp_balance
     qty = round(STRATEGIES["SCALP"]["trade_size"] / price, 6)
@@ -215,12 +251,17 @@ def paper_buy_scalp(symbol, price):
         return None
     scalp_balance -= cost
     log.info(f"📄 ⚡ SCALP BUY {symbol} qty={qty} @ ${price:,.2f} | Scalp Balance: ${scalp_balance:,.2f}")
+    send_telegram(f"🟢 <b>SCALP BUY</b>\n{symbol} @ ${price:,.2f}\nQty: {qty}\nBalance: ${scalp_balance:,.2f}")
     return qty
 
-def paper_sell_scalp(symbol, price, qty):
+def paper_sell_scalp(symbol, price, qty, pnl=None):
     global scalp_balance
     scalp_balance += qty * price
-    log.info(f"📄 ⚡ SCALP SELL {symbol} qty={qty} @ ${price:,.2f} | Scalp Balance: ${scalp_balance:,.2f}")
+    pnl_text = f" | PnL: ${pnl:+.2f}" if pnl is not None else ""
+    log.info(f"📄 ⚡ SCALP SELL {symbol} qty={qty} @ ${price:,.2f}{pnl_text} | Scalp Balance: ${scalp_balance:,.2f}")
+    if pnl is not None:
+        emoji = "✅" if pnl >= 0 else "🔴"
+        send_telegram(f"{emoji} <b>SCALP SELL</b>\n{symbol} @ ${price:,.2f}\nPnL: ${pnl:+.2f}\nBalance: ${scalp_balance:,.2f}")
 
 def paper_buy_trend(symbol, price):
     global trend_balance
@@ -231,20 +272,25 @@ def paper_buy_trend(symbol, price):
         return None
     trend_balance -= cost
     log.info(f"📄 📈 TREND BUY {symbol} qty={qty} @ ${price:,.2f} | Trend Balance: ${trend_balance:,.2f}")
+    send_telegram(f"🟢 <b>TREND BUY</b>\n{symbol} @ ${price:,.2f}\nQty: {qty}\nBalance: ${trend_balance:,.2f}")
     return qty
 
-def paper_sell_trend(symbol, price, qty):
+def paper_sell_trend(symbol, price, qty, pnl=None):
     global trend_balance
     trend_balance += qty * price
-    log.info(f"📄 📈 TREND SELL {symbol} qty={qty} @ ${price:,.2f} | Trend Balance: ${trend_balance:,.2f}")
+    pnl_text = f" | PnL: ${pnl:+.2f}" if pnl is not None else ""
+    log.info(f"📄 📈 TREND SELL {symbol} qty={qty} @ ${price:,.2f}{pnl_text} | Trend Balance: ${trend_balance:,.2f}")
+    if pnl is not None:
+        emoji = "✅" if pnl >= 0 else "🔴"
+        send_telegram(f"{emoji} <b>TREND SELL</b>\n{symbol} @ ${price:,.2f}\nPnL: ${pnl:+.2f}\nBalance: ${trend_balance:,.2f}")
 
 def get_balances():
     if TRADING_MODE == "live":
         total = kraken_get_balance()
-        return total, total, total  # In live mode, same balance for both
+        return total, total, total
     return scalp_balance, trend_balance, scalp_balance + trend_balance
 
-# ═══ STRATEGY TICK – UPDATED WITH BOLLINGER BANDS ════════════════════════════
+# ═══ STRATEGY TICK ════════════════════════════════════════════════════════════
 def run_strategy(strategy_name, cfg, positions, trades, stats, buy_func, sell_func):
     for s in SYMBOLS:
         symbol = s["symbol"]
@@ -272,7 +318,8 @@ def run_strategy(strategy_name, cfg, positions, trades, stats, buy_func, sell_fu
                     if TRADING_MODE == "live":
                         kraken_place_order(s["kraken_order"], "sell", pos["qty"])
                     else:
-                        sell_func(symbol, price, pos["qty"])
+                        pnl = pos["qty"] * (price - pos["entry"])
+                        sell_func(symbol, price, pos["qty"], pnl)
                     pnl = pos["qty"] * (price - pos["entry"])
                     stats["pnl"] += pnl
                     if is_win: stats["wins"] += 1
@@ -287,19 +334,18 @@ def run_strategy(strategy_name, cfg, positions, trades, stats, buy_func, sell_fu
                     del positions[symbol]
                     log.info(f"{'✅' if is_win else '🛑'} [{strategy_name}] SELL {symbol} | {reason} | PnL={pnl:+.4f}")
 
-            # ── ENTRY – UPDATED WITH BOLLINGER BANDS ───────────────────────
+            # ── ENTRY ─────────────────────────────────────────────────────
             if symbol not in positions:
                 entry_signal = False
                 signal_reason = ""
                 
-                # Signal 1: RSI below buy threshold
+                # Signal 1: RSI
                 if rsi is not None and rsi < cfg["rsi_buy"]:
                     entry_signal = True
                     signal_reason = f"RSI {rsi} < {cfg['rsi_buy']}"
                 
-                # Signal 2: Bollinger Band touch (only for scalp strategy)
+                # Signal 2: Bollinger (scalp only)
                 if strategy_name == "SCALP":
-                    # Get more OHLC data for Bollinger calculation
                     try:
                         r = session.get(
                             f"{KRAKEN_URL}/0/public/OHLC?pair={s['kraken_ohlc']}&interval={cfg['rsi_interval']}",
@@ -309,11 +355,10 @@ def run_strategy(strategy_name, cfg, positions, trades, stats, buy_func, sell_fu
                         if not data.get("error") and data["result"]:
                             result = data["result"]
                             key = [k for k in result.keys() if k != "last"][0]
-                            closes = [float(c[4]) for c in result[key][-50:]]  # Get more candles
-                            
+                            closes = [float(c[4]) for c in result[key][-50:]]
                             if is_lower_band_touch(price, closes):
                                 entry_signal = True
-                                signal_reason = f"Bollinger Band touch ${price:,.2f}"
+                                signal_reason = f"Bollinger touch ${price:,.2f}"
                     except Exception as e:
                         log.error(f"Bollinger error {symbol}: {e}")
                 
@@ -340,10 +385,15 @@ def run_strategy(strategy_name, cfg, positions, trades, stats, buy_func, sell_fu
         except Exception as e:
             log.error(f"[{strategy_name}] Tick error {symbol}: {e}")
 
-# ═══ SAVE STATE – PERSISTENT STORAGE ════════════════════════════════════════
+# ═══ SAVE STATE ═══════════════════════════════════════════════════════════════
 def save_state():
     try:
         scalp_bal, trend_bal, total_bal = get_balances()
+        
+        # Store yesterday's P&L for daily loss calculation
+        scalp_stats["pnl_yesterday"] = scalp_stats.get("pnl", 0)
+        trend_stats["pnl_yesterday"] = trend_stats.get("pnl", 0)
+        
         state = {
             "scalp": {
                 "balance": scalp_bal,
@@ -364,16 +414,13 @@ def save_state():
             "updated": datetime.now(timezone.utc).isoformat()
         }
         
-        # Save to persistent location
         with open(STATE_PATH, "w") as f:
             json.dump(state, f)
         
-        # Save timestamped backup
         backup_name = f"/data/state_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(backup_name, "w") as f:
             json.dump(state, f)
         
-        # Keep only last 50 backups
         import glob
         backups = sorted(glob.glob("/data/state_*.json"))
         for old in backups[:-50]:
@@ -382,7 +429,7 @@ def save_state():
     except Exception as e:
         log.error(f"save_state error: {e}")
 
-# ═══ LOAD STATE – RESTORE FROM PERSISTENT STORAGE ════════════════════════════
+# ═══ LOAD STATE ═══════════════════════════════════════════════════════════════
 def load_state():
     global scalp_balance, trend_balance, scalp_positions, trend_positions
     global scalp_trades, trend_trades, scalp_stats, trend_stats
@@ -416,12 +463,18 @@ def load_state():
 def bot_tick():
     global rsi_cache, active_strategy
     rsi_cache = {}
+    
     # Read active strategy from dashboard
     try:
         if os.path.exists("/tmp/active_strategy.txt"):
             with open("/tmp/active_strategy.txt") as f:
                 active_strategy = f.read().strip()
     except: pass
+    
+    # ⚠️ SAFETY CHECK – Stop if limits exceeded
+    if not check_safety_limits():
+        save_state()
+        return
     
     scalp_bal, trend_bal, total_bal = get_balances()
     now = datetime.now(timezone.utc).strftime('%H:%M:%S')
@@ -439,12 +492,16 @@ def bot_tick():
 
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    log.info(f"⚡📈 APEX BOT DUAL STRATEGY – WITH BOLLINGER BANDS")
-    log.info(f"⚡ SCALP: RSI(1m) Buy<45 OR Bollinger Touch | Sell>65 TP2% SL1% $100/trade")
-    log.info(f"📈 TREND: RSI(4h) Buy<45 Sell>75 TP5% SL4% $200/trade")
-    log.info(f"💰 Initial Balances: Scalp $10,000 | Trend $10,000 | Total $20,000")
+    log.info(f"⚡📈 APEX BOT – FINAL SAFETY EDITION")
+    log.info(f"⚡ SCALP: RSI(1m) Buy<45 OR Bollinger | Sell>65 TP2% SL1% $100")
+    log.info(f"📈 TREND: RSI(4h) Buy<45 Sell>75 TP5% SL4% $200")
+    log.info(f"🛡️ Safety: Max daily loss ${MAX_DAILY_LOSS} | Max positions {MAX_POSITIONS}")
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        log.info(f"📱 Telegram alerts: ENABLED")
+        send_telegram("🚀 <b>APEX BOT STARTED</b>\nSafety features active")
+    else:
+        log.info(f"📱 Telegram alerts: DISABLED (set TELEGRAM_* env vars to enable)")
     
-    # Try to load existing state
     if not load_state():
         log.info("No existing state found, starting fresh")
     
@@ -454,7 +511,7 @@ if __name__ == "__main__":
             exit(1)
         log.info(f"💰 Live Mode – Using real Kraken balance")
     else:
-        log.info(f"💰 Paper Mode – Separate balances: Scalp ${scalp_balance:,.2f} Trend ${trend_balance:,.2f}")
+        log.info(f"💰 Paper Mode – Balances: Scalp ${scalp_balance:,.2f} Trend ${trend_balance:,.2f}")
     
     save_state()
     fetch_all_prices()
@@ -464,5 +521,6 @@ if __name__ == "__main__":
             bot_tick()
         except Exception as e:
             log.error(f"Bot error: {e}")
+            send_telegram(f"⚠️ <b>Bot error</b>\n{str(e)[:100]}")
         log.info("⏳ Sleeping 30s...")
         time.sleep(30)
