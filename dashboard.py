@@ -1,17 +1,18 @@
-import json, os
+import json, os, glob
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+from datetime import datetime
 
-STATE_FILE = "/tmp/state.json"
+STATE_FILE = "/data/state.json"  # Use persistent storage
 active_strategy = "SCALP"  # Default view
 
-# HTML Template with placeholders
+# HTML Template (same as before, but with persistent storage)
 HTML = """<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <meta http-equiv="refresh" content="30"/>
-<title>APEX BOT • __ACTIVE_STRATEGY__</title>
+<title>APEX BOT • FINAL</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Clash+Display:wght@600;700&display=swap" rel="stylesheet"/>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -19,7 +20,6 @@ HTML = """<!DOCTYPE html>
 body{background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;min-height:100vh}
 ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:var(--dim)}
 
-/* HEADER */
 .header{background:rgba(13,20,33,0.95);backdrop-filter:blur(10px);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
 .brand{display:flex;align-items:center;gap:12px}
 .brand-icon{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--gold),#e67e00);display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 0 20px rgba(240,185,11,0.3)}
@@ -32,7 +32,6 @@ body{background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;min-
 .total-balance{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 14px;font-size:13px}
 .total-balance span{color:#a78bfa;font-weight:500}
 
-/* STRATEGY SWITCHER */
 .switcher{display:flex;gap:10px;padding:20px 24px;max-width:1200px;margin:0 auto}
 .strat-btn{flex:1;padding:14px 20px;border-radius:12px;border:2px solid var(--border);background:var(--surface);cursor:pointer;transition:all .2s;text-align:center;font-family:'DM Mono',monospace;text-decoration:none;display:block}
 .strat-btn:hover{transform:translateY(-2px)}
@@ -43,23 +42,19 @@ body{background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;min-
 .btn-desc{font-size:10px;color:var(--muted);margin-top:3px}
 .btn-active-badge{display:inline-block;margin-top:6px;font-size:9px;padding:2px 8px;border-radius:4px;letter-spacing:.1em}
 
-/* BODY */
 .body{padding:0 24px 24px;max-width:1200px;margin:0 auto}
 
-/* STRATEGY HEADER */
 .strategy-header{display:flex;align-items:center;gap:12px;margin-bottom:20px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:12px}
 .strategy-icon{font-size:28px}
 .strategy-title{font-family:'Clash Display',sans-serif;font-size:20px}
 .strategy-desc{font-size:11px;color:var(--muted);margin-top:4px}
 
-/* STATS GRID */
 .stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px}
 .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
 .stat-label{font-size:9px;color:var(--muted);letter-spacing:.15em;margin-bottom:6px}
 .stat-val{font-family:'Clash Display',sans-serif;font-size:24px;font-weight:700}
 .stat-sub{font-size:10px;color:var(--muted);margin-top:4px}
 
-/* POSITIONS */
 .positions-section{background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:24px;overflow:hidden}
 .section-header{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
 .section-title{font-family:'Clash Display',sans-serif;font-size:14px;letter-spacing:.05em}
@@ -70,7 +65,6 @@ body{background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;min-
 .pos-pnl{font-size:14px;font-weight:600}
 .no-positions{padding:20px;text-align:center;color:var(--dim);font-size:12px}
 
-/* COIN GRID */
 .coin-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:12px 16px}
 .coin-card{background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:8px;padding:10px}
 .coin-name{font-size:11px;color:var(--muted);margin-bottom:4px;display:flex;align-items:center;gap:5px}
@@ -80,7 +74,6 @@ body{background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;min-
 .tag-scalp{background:rgba(240,185,11,.15);color:var(--gold)}
 .tag-trend{background:rgba(34,197,94,.15);color:var(--green)}
 
-/* TRADES TABLE */
 .trades-section{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:16px}
 table{width:100%;border-collapse:collapse;font-size:11px}
 th{padding:8px 14px;text-align:left;color:var(--muted);font-size:10px;background:rgba(0,0,0,0.2);letter-spacing:.08em}
@@ -88,11 +81,9 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
 .buy-badge{color:var(--green);background:rgba(34,197,94,.1);padding:2px 7px;border-radius:3px;font-size:10px;font-weight:500}
 .sell-badge{color:var(--red);background:rgba(239,68,68,.1);padding:2px 7px;border-radius:3px;font-size:10px;font-weight:500}
 
-/* FOOTER */
 .footer{padding:16px 0 8px;display:flex;justify-content:space-between;font-size:10px;color:var(--dim);flex-wrap:wrap;gap:6px;border-top:1px solid var(--border);margin-top:16px}
 .refresh-note{text-align:center;font-size:9px;color:var(--dim);padding-bottom:8px}
 
-/* COIN COLORS */
 .btc{background:#f7931a}.eth{background:#627eea}.sol{background:#9945ff}.xrp{background:#346aa9}
 </style>
 </head>
@@ -102,7 +93,7 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
   <div class="brand">
     <div class="brand-icon">⚡📈</div>
     <div>
-      <div class="brand-name">APEX BOT PRO</div>
+      <div class="brand-name">APEX BOT FINAL</div>
       <div class="brand-sub">DUAL STRATEGY • PAPER TRADING</div>
     </div>
   </div>
@@ -115,7 +106,7 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
   </div>
 </div>
 
-<!-- STRATEGY SWITCHER - TWO BUTTONS ONLY -->
+<!-- STRATEGY SWITCHER -->
 <div class="switcher">
   <a href="/set_strategy?mode=SCALP" class="strat-btn __SCALP_ACTIVE__">
     <div class="btn-icon">⚡</div>
@@ -132,10 +123,8 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
 </div>
 
 <div class="body">
-  <!-- DYNAMIC CONTENT - FILLED BY RENDER FUNCTION -->
   __STRATEGY_HEADER__
   
-  <!-- STATS CARDS -->
   <div class="stats-grid">
     <div class="stat-card">
       <div class="stat-label">__STRATEGY_NAME__ BALANCE</div>
@@ -156,7 +145,6 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
     </div>
   </div>
 
-  <!-- OPEN POSITIONS -->
   <div class="positions-section">
     <div class="section-header">
       <div class="section-title">OPEN POSITIONS (__OPEN_POSITIONS__)</div>
@@ -167,7 +155,6 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
     </div>
   </div>
 
-  <!-- LIVE PRICES -->
   <div class="positions-section">
     <div class="section-header">
       <div class="section-title">📊 LIVE PRICES</div>
@@ -178,7 +165,6 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
     </div>
   </div>
 
-  <!-- ORDER HISTORY -->
   <div class="trades-section">
     <div class="section-header">
       <div class="section-title">📋 ORDER HISTORY (__TRADE_COUNT__)</div>
@@ -193,7 +179,7 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
 
   <div class="footer">
     <span>⚡ Scalp: RSI(1m) Buy<45 Sell>65 TP2% SL1% $100</span>
-    <span>📈 Trend: RSI(4h) Buy<50 Sell>75 TP5% SL4% $200</span>
+    <span>📈 Trend: RSI(4h) Buy<45 Sell>75 TP5% SL4% $200</span>
     <span style="color:__ACTIVE_COLOR__">Active: __ACTIVE_STRATEGY__</span>
   </div>
   <div class="refresh-note">⟳ Auto-refreshes every 30 seconds</div>
@@ -227,14 +213,12 @@ def render_positions(positions, prices, tp, sl):
     return html
 
 def render(state, view_mode):
-    # Extract data
     scalp = state.get("scalp", {})
     trend = state.get("trend", {})
     prices = state.get("prices", {})
     total_balance = state.get("total_balance", 20000)
     updated = state.get("updated", "—")[:19].replace("T", " ")
 
-    # Choose which strategy to display
     if view_mode == "SCALP":
         data = scalp
         strategy_name = "SCALPING"
@@ -243,27 +227,25 @@ def render(state, view_mode):
         tp = 0.02
         sl = 0.01
         desc = "1min RSI • Buy <45 • Sell >65 • TP 2% • SL 1% • $100/trade"
-    else:  # TREND
+    else:
         data = trend
         strategy_name = "DAILY TREND"
         strategy_icon = "📈"
         color = "#22c55e"
         tp = 0.05
         sl = 0.04
-        desc = "4h RSI • Buy <50 • Sell >75 • TP 5% • SL 4% • $200/trade"
+        desc = "4h RSI • Buy <45 • Sell >75 • TP 5% • SL 4% • $200/trade"
 
     balance = data.get("balance", 10000)
     stats = data.get("stats", {"pnl": 0, "wins": 0, "losses": 0})
     positions = data.get("positions", {})
     trades = data.get("trades", [])
 
-    # Calculate values
     pnl = stats["pnl"]
     wins = stats["wins"]
     losses = stats["losses"]
     total_trades = wins + losses
 
-    # Strategy header
     strategy_header = f'''
     <div class="strategy-header" style="border-left:4px solid {color}">
         <div class="strategy-icon">{strategy_icon}</div>
@@ -274,7 +256,6 @@ def render(state, view_mode):
     </div>
     '''
 
-    # Coin cards with strategy tags
     coin_cards = ""
     for sym, cls in COIN_COLORS.items():
         price = prices.get(sym, 0)
@@ -293,7 +274,6 @@ def render(state, view_mode):
           <div class="coin-price">${price:,.2f}</div>
         </div>'''
 
-    # Trade rows
     trade_rows = ""
     for t in trades[-30:]:
         pnl_v = t.get("pnl")
@@ -313,13 +293,11 @@ def render(state, view_mode):
     if not trade_rows:
         trade_rows = f'<tr><td colspan="6" style="text-align:center;color:var(--dim);padding:24px">No {strategy_name.lower()} trades yet — bot is scanning</td></tr>'
 
-    # Button states
     scalp_active = "active-scalp" if view_mode == "SCALP" else ""
     trend_active = "active-trend" if view_mode == "TREND" else ""
     scalp_badge = '<div class="btn-active-badge" style="background:rgba(240,185,11,.2);color:#f0b90b">● ACTIVE</div>' if view_mode == "SCALP" else ""
     trend_badge = '<div class="btn-active-badge" style="background:rgba(34,197,94,.2);color:#22c55e">● ACTIVE</div>' if view_mode == "TREND" else ""
 
-    # Fill template
     html = HTML
     html = html.replace("__TOTAL_BALANCE__", f"${total_balance:,.2f}")
     html = html.replace("__STRATEGY_HEADER__", strategy_header)
@@ -354,7 +332,6 @@ class Handler(BaseHTTPRequestHandler):
         global active_strategy
         parsed = urlparse(self.path)
 
-        # Handle strategy switching
         if parsed.path == "/set_strategy":
             params = parse_qs(parsed.query)
             mode = params.get("mode", ["SCALP"])[0].upper()
@@ -367,7 +344,6 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        # Serve dashboard
         try:
             if os.path.exists("/tmp/active_strategy.txt"):
                 with open("/tmp/active_strategy.txt") as f:
@@ -377,6 +353,13 @@ class Handler(BaseHTTPRequestHandler):
             if os.path.exists(STATE_FILE):
                 with open(STATE_FILE) as f:
                     state = json.load(f)
+            else:
+                # Try backup locations
+                backups = sorted(glob.glob("/data/state_*.json"))
+                if backups:
+                    with open(backups[-1]) as f:
+                        state = json.load(f)
+                    log.info(f"Restored from backup: {backups[-1]}")
 
             body = render(state, active_strategy).encode()
             self.send_response(200)
