@@ -16,19 +16,19 @@ STRATEGIES = {
     "SCALP": {
         "rsi_interval": 1,        # 1-minute candles
         "rsi_buy": 45,            # buy when RSI < 45
-        "rsi_sell": 60,           # sell when RSI > 60
+        "rsi_sell": 65,           # sell when RSI > 65
         "tp": 0.02,               # 2% take profit
-        "sl": 0.015,              # 1.5% stop loss — more breathing room
+        "sl": 0.01,               # 1.0% stop loss (tight but safe)
         "trade_size": 100,        # $100 per trade
         "label": "⚡ Scalping",
         "color": "#f0b90b"
     },
     "TREND": {
-        "rsi_interval": 240,      # 4-hour candles for daily trend
-        "rsi_buy": 40,            # buy when RSI < 40
-        "rsi_sell": 65,           # sell when RSI > 65
+        "rsi_interval": 240,      # 4-hour candles
+        "rsi_buy": 50,            # buy when RSI < 50 (pullbacks)
+        "rsi_sell": 75,           # sell when RSI > 75
         "tp": 0.05,               # 5% take profit
-        "sl": 0.025,              # 2.5% stop loss
+        "sl": 0.04,               # 4.0% stop loss
         "trade_size": 200,        # $200 per trade
         "label": "📈 Daily Trend",
         "color": "#22c55e"
@@ -49,12 +49,13 @@ scalp_trades     = []
 trend_trades     = []
 scalp_stats      = {"pnl": 0.0, "wins": 0, "losses": 0}
 trend_stats      = {"pnl": 0.0, "wins": 0, "losses": 0}
-paper_balance    = 10000.0
+scalp_balance    = 10000.0          # Separate balance for scalp
+trend_balance    = 10000.0          # Separate balance for trend
 price_cache      = {}
 last_price_cache = {}
 rsi_cache        = {}
 last_rsi_cache   = {}
-active_strategy  = "BOTH"  # SCALP, TREND, or BOTH
+active_strategy  = "SCALP"           # SCALP or TREND (for dashboard view)
 
 session = requests.Session()
 retries = Retry(total=5, backoff_factor=2, status_forcelist=[502, 503, 504])
@@ -114,14 +115,14 @@ def get_rsi(kraken_ohlc, symbol, interval):
     return None
 
 def calc_rsi(prices):
-    if len(prices) < 15: return None  # need 14+1 prices
-    recent = prices[-15:]  # last 15 = 14 periods
+    if len(prices) < 15: return None
+    recent = prices[-15:]
     gains = losses = 0
     for i in range(1, len(recent)):
         d = recent[i] - recent[i-1]
         if d > 0: gains += d
         else: losses += abs(d)
-    ag, al = gains/14, losses/14  # RSI period = 14
+    ag, al = gains/14, losses/14
     if al == 0: return 100
     return round(100 - 100/(1 + ag/al), 2)
 
@@ -155,29 +156,47 @@ def kraken_place_order(pair, side, qty):
         "pair": pair, "type": side, "ordertype": "market", "volume": str(round(qty, 6))
     })
 
-# ═══ PAPER TRADING ════════════════════════════════════════════════════════════
-def paper_buy(symbol, price, trade_size, strategy_label):
-    global paper_balance
-    qty = round(trade_size / price, 6)
+# ═══ PAPER TRADING – SEPARATE BALANCES ═══════════════════════════════════════
+def paper_buy_scalp(symbol, price):
+    global scalp_balance
+    qty = round(STRATEGIES["SCALP"]["trade_size"] / price, 6)
     cost = qty * price
-    if paper_balance < cost:
-        log.warning(f"Insufficient balance for {symbol} {strategy_label}")
+    if scalp_balance < cost:
+        log.warning(f"Insufficient scalp balance for {symbol}")
         return None
-    paper_balance -= cost
-    log.info(f"📄 {strategy_label} BUY {symbol} qty={qty} @ ${price:,.2f} | Balance: ${paper_balance:,.2f}")
+    scalp_balance -= cost
+    log.info(f"📄 ⚡ SCALP BUY {symbol} qty={qty} @ ${price:,.2f} | Scalp Balance: ${scalp_balance:,.2f}")
     return qty
 
-def paper_sell(symbol, price, qty, strategy_label):
-    global paper_balance
-    paper_balance += qty * price
-    log.info(f"📄 {strategy_label} SELL {symbol} qty={qty} @ ${price:,.2f} | Balance: ${paper_balance:,.2f}")
+def paper_sell_scalp(symbol, price, qty):
+    global scalp_balance
+    scalp_balance += qty * price
+    log.info(f"📄 ⚡ SCALP SELL {symbol} qty={qty} @ ${price:,.2f} | Scalp Balance: ${scalp_balance:,.2f}")
 
-def get_balance():
-    if TRADING_MODE == "live": return kraken_get_balance()
-    return paper_balance
+def paper_buy_trend(symbol, price):
+    global trend_balance
+    qty = round(STRATEGIES["TREND"]["trade_size"] / price, 6)
+    cost = qty * price
+    if trend_balance < cost:
+        log.warning(f"Insufficient trend balance for {symbol}")
+        return None
+    trend_balance -= cost
+    log.info(f"📄 📈 TREND BUY {symbol} qty={qty} @ ${price:,.2f} | Trend Balance: ${trend_balance:,.2f}")
+    return qty
+
+def paper_sell_trend(symbol, price, qty):
+    global trend_balance
+    trend_balance += qty * price
+    log.info(f"📄 📈 TREND SELL {symbol} qty={qty} @ ${price:,.2f} | Trend Balance: ${trend_balance:,.2f}")
+
+def get_balances():
+    if TRADING_MODE == "live":
+        total = kraken_get_balance()
+        return total, total, total  # In live mode, same balance for both
+    return scalp_balance, trend_balance, scalp_balance + trend_balance
 
 # ═══ STRATEGY TICK ════════════════════════════════════════════════════════════
-def run_strategy(strategy_name, cfg, positions, trades, stats):
+def run_strategy(strategy_name, cfg, positions, trades, stats, buy_func, sell_func):
     for s in SYMBOLS:
         symbol = s["symbol"]
         try:
@@ -188,7 +207,7 @@ def run_strategy(strategy_name, cfg, positions, trades, stats):
             log.info(f"[{strategy_name}] {symbol} = ${price:,.2f} | RSI({cfg['rsi_interval']}m) = {rsi}")
             pos = positions.get(symbol)
 
-            # ── EXIT ──────────────────────────────────────────────────────────
+            # ── EXIT ──────────────────────────────────────────────────────
             if pos:
                 pct = (price - pos["entry"]) / pos["entry"]
                 reason = None
@@ -204,7 +223,7 @@ def run_strategy(strategy_name, cfg, positions, trades, stats):
                     if TRADING_MODE == "live":
                         kraken_place_order(s["kraken_order"], "sell", pos["qty"])
                     else:
-                        paper_sell(symbol, price, pos["qty"], cfg["label"])
+                        sell_func(symbol, price, pos["qty"])
                     pnl = pos["qty"] * (price - pos["entry"])
                     stats["pnl"] += pnl
                     if is_win: stats["wins"] += 1
@@ -219,14 +238,14 @@ def run_strategy(strategy_name, cfg, positions, trades, stats):
                     del positions[symbol]
                     log.info(f"{'✅' if is_win else '🛑'} [{strategy_name}] SELL {symbol} | {reason} | PnL={pnl:+.4f}")
 
-            # ── ENTRY ─────────────────────────────────────────────────────────
+            # ── ENTRY ─────────────────────────────────────────────────────
             if symbol not in positions and rsi is not None and rsi < cfg["rsi_buy"]:
                 log.info(f"🎯 [{strategy_name}] BUY SIGNAL {symbol} RSI={rsi}")
                 if TRADING_MODE == "live":
                     qty = round(cfg["trade_size"] / price, 6)
                     kraken_place_order(s["kraken_order"], "buy", qty)
                 else:
-                    qty = paper_buy(symbol, price, cfg["trade_size"], cfg["label"])
+                    qty = buy_func(symbol, price)
                     if qty is None: continue
                 positions[symbol] = {"entry": price, "qty": qty, "time": datetime.now(timezone.utc).isoformat()}
                 trades.append({
@@ -246,23 +265,24 @@ def run_strategy(strategy_name, cfg, positions, trades, stats):
 # ═══ SAVE STATE ═══════════════════════════════════════════════════════════════
 def save_state():
     try:
-        all_trades = sorted(
-            [*scalp_trades[-25:], *trend_trades[-25:]],
-            key=lambda x: x["time"], reverse=True
-        )[:50]
+        scalp_bal, trend_bal, total_bal = get_balances()
         state = {
-            "scalp_positions": scalp_positions,
-            "trend_positions": trend_positions,
-            "scalp_trades": scalp_trades[-50:],
-            "trend_trades": trend_trades[-50:],
-            "all_trades": all_trades,
-            "scalp_stats": scalp_stats,
-            "trend_stats": trend_stats,
-            "balance": get_balance(),
+            "scalp": {
+                "balance": scalp_bal,
+                "positions": scalp_positions,
+                "trades": scalp_trades[-50:],
+                "stats": scalp_stats
+            },
+            "trend": {
+                "balance": trend_bal,
+                "positions": trend_positions,
+                "trades": trend_trades[-50:],
+                "stats": trend_stats
+            },
+            "total_balance": total_bal,
             "mode": TRADING_MODE,
             "active_strategy": active_strategy,
             "prices": price_cache,
-            "rsi": rsi_cache,
             "updated": datetime.now(timezone.utc).isoformat()
         }
         with open("/tmp/state.json", "w") as f:
@@ -274,42 +294,45 @@ def save_state():
 def bot_tick():
     global rsi_cache, active_strategy
     rsi_cache = {}
-    # Read active strategy from dashboard
+    # Read active strategy from dashboard (for display only)
     try:
         if os.path.exists("/tmp/active_strategy.txt"):
             with open("/tmp/active_strategy.txt") as f:
                 active_strategy = f.read().strip()
     except: pass
+    
+    scalp_bal, trend_bal, total_bal = get_balances()
     now = datetime.now(timezone.utc).strftime('%H:%M:%S')
-    log.info(f"--- Tick {now} | {TRADING_MODE.upper()} | ${get_balance():,.2f} | Active: {active_strategy} ---")
+    log.info(f"--- Tick {now} | {TRADING_MODE.upper()} | Total: ${total_bal:,.2f} (Scalp: ${scalp_bal:,.2f} Trend: ${trend_bal:,.2f}) | View: {active_strategy} ---")
 
     if not fetch_all_prices():
         log.error("No prices available")
         return
 
-    if active_strategy in ("SCALP", "BOTH"):
-        run_strategy("SCALP", STRATEGIES["SCALP"], scalp_positions, scalp_trades, scalp_stats)
-
-    if active_strategy in ("TREND", "BOTH"):
-        run_strategy("TREND", STRATEGIES["TREND"], trend_positions, trend_trades, trend_stats)
+    # ALWAYS run both strategies regardless of view
+    run_strategy("SCALP", STRATEGIES["SCALP"], scalp_positions, scalp_trades, scalp_stats, paper_buy_scalp, paper_sell_scalp)
+    run_strategy("TREND", STRATEGIES["TREND"], trend_positions, trend_trades, trend_stats, paper_buy_trend, paper_sell_trend)
 
     save_state()
 
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    log.info(f"⚡ APEX BOT DUAL STRATEGY | {TRADING_MODE.upper()} mode")
-    log.info(f"⚡ SCALP: RSI(1m) Buy<45 Sell>60 TP2% SL1.5% $100/trade")
-    log.info(f"📈 TREND: RSI(4h) Buy<40 Sell>65 TP5% SL2.5% $200/trade")
-    log.info(f"💰 Max exposure: 4x$100 + 4x$200 = $1,200 (12% of balance)")
+    log.info(f"⚡📈 APEX BOT DUAL STRATEGY | {TRADING_MODE.upper()} mode")
+    log.info(f"⚡ SCALP: RSI(1m) Buy<45 Sell>65 TP2% SL1% $100/trade")
+    log.info(f"📈 TREND: RSI(4h) Buy<50 Sell>75 TP5% SL4% $200/trade")
+    log.info(f"💰 Initial Balances: Scalp $10,000 | Trend $10,000 | Total $20,000")
+    
     if TRADING_MODE == "live":
         if not KRAKEN_API_KEY or not KRAKEN_API_SECRET:
             log.error("❌ Missing API keys!")
             exit(1)
-        log.info(f"💰 Kraken Balance: ${kraken_get_balance():,.2f}")
+        log.info(f"💰 Live Mode – Using real Kraken balance")
     else:
-        log.info(f"💰 Paper Balance: ${paper_balance:,.2f}")
+        log.info(f"💰 Paper Mode – Separate balances: Scalp ${scalp_balance:,.2f} Trend ${trend_balance:,.2f}")
+    
     save_state()
     fetch_all_prices()
+    
     while True:
         try:
             bot_tick()
