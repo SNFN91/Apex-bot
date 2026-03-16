@@ -11,7 +11,7 @@ KRAKEN_API_KEY    = os.environ.get("KRAKEN_API_KEY", "")
 KRAKEN_API_SECRET = os.environ.get("KRAKEN_API_SECRET", "")
 KRAKEN_URL        = "https://api.kraken.com"
 
-# ═══ DUAL STRATEGY CONFIG – FINAL VERSION ════════════════════════════════════
+# ═══ DUAL STRATEGY CONFIG – FINAL VERSION WITH BOLLINGER BANDS ═══════════════
 STRATEGIES = {
     "SCALP": {
         "rsi_interval": 1,        # 1-minute candles
@@ -25,7 +25,7 @@ STRATEGIES = {
     },
     "TREND": {
         "rsi_interval": 240,      # 4-hour candles
-        "rsi_buy": 45,            # ⬅️ CHANGED: buy when RSI < 45 (was 50)
+        "rsi_buy": 45,            # buy when RSI < 45 (was 50)
         "rsi_sell": 75,           # sell when RSI > 75
         "tp": 0.05,               # 5% take profit
         "sl": 0.04,               # 4% stop loss
@@ -136,6 +136,45 @@ def calc_rsi(prices):
     if al == 0: return 100
     return round(100 - 100/(1 + ag/al), 2)
 
+# ═══ BOLLINGER BANDS ════════════════════════════════════════════════════════
+def calculate_bollinger_bands(prices, period=20, std_dev=2):
+    """
+    Calculate Bollinger Bands.
+    Returns: (lower_band, middle_band, upper_band)
+    """
+    if len(prices) < period:
+        return None, None, None
+    
+    # Use last 'period' prices
+    recent = prices[-period:]
+    
+    # Calculate middle band (SMA)
+    middle_band = sum(recent) / period
+    
+    # Calculate standard deviation
+    variance = sum((x - middle_band) ** 2 for x in recent) / period
+    std = variance ** 0.5
+    
+    # Calculate upper and lower bands
+    lower_band = middle_band - (std_dev * std)
+    upper_band = middle_band + (std_dev * std)
+    
+    return lower_band, middle_band, upper_band
+
+def is_lower_band_touch(price, prices, threshold_pct=0.01):
+    """
+    Check if price is at or below lower Bollinger Band.
+    threshold_pct = 1% tolerance (price can be up to 1% below band)
+    """
+    lower_band, middle, upper = calculate_bollinger_bands(prices)
+    if lower_band is None:
+        return False
+    
+    # Price touches or goes below lower band (with 1% tolerance)
+    if price <= lower_band * (1 + threshold_pct):
+        return True
+    return False
+
 # ═══ KRAKEN LIVE ══════════════════════════════════════════════════════════════
 def kraken_sign(urlpath, data):
     postdata = urllib.parse.urlencode(data)
@@ -205,7 +244,7 @@ def get_balances():
         return total, total, total  # In live mode, same balance for both
     return scalp_balance, trend_balance, scalp_balance + trend_balance
 
-# ═══ STRATEGY TICK ════════════════════════════════════════════════════════════
+# ═══ STRATEGY TICK – UPDATED WITH BOLLINGER BANDS ════════════════════════════
 def run_strategy(strategy_name, cfg, positions, trades, stats, buy_func, sell_func):
     for s in SYMBOLS:
         symbol = s["symbol"]
@@ -248,26 +287,55 @@ def run_strategy(strategy_name, cfg, positions, trades, stats, buy_func, sell_fu
                     del positions[symbol]
                     log.info(f"{'✅' if is_win else '🛑'} [{strategy_name}] SELL {symbol} | {reason} | PnL={pnl:+.4f}")
 
-            # ── ENTRY ─────────────────────────────────────────────────────
-            if symbol not in positions and rsi is not None and rsi < cfg["rsi_buy"]:
-                log.info(f"🎯 [{strategy_name}] BUY SIGNAL {symbol} RSI={rsi}")
-                if TRADING_MODE == "live":
-                    qty = round(cfg["trade_size"] / price, 6)
-                    kraken_place_order(s["kraken_order"], "buy", qty)
-                else:
-                    qty = buy_func(symbol, price)
-                    if qty is None: continue
-                positions[symbol] = {"entry": price, "qty": qty, "time": datetime.now(timezone.utc).isoformat()}
-                trades.append({
-                    "symbol": f"{symbol}/USD", "side": "BUY",
-                    "price": price, "qty": qty, "pnl": None,
-                    "reason": f"RSI {rsi} < {cfg['rsi_buy']}",
-                    "strategy": strategy_name,
-                    "time": datetime.now(timezone.utc).isoformat()
-                })
-                log.info(f"📈 [{strategy_name}] BUY {symbol} @ ${price:,.2f}")
-            elif symbol not in positions:
-                log.info(f"⏳ [{strategy_name}] {symbol} RSI={rsi} — waiting for RSI < {cfg['rsi_buy']}")
+            # ── ENTRY – UPDATED WITH BOLLINGER BANDS ───────────────────────
+            if symbol not in positions:
+                entry_signal = False
+                signal_reason = ""
+                
+                # Signal 1: RSI below buy threshold
+                if rsi is not None and rsi < cfg["rsi_buy"]:
+                    entry_signal = True
+                    signal_reason = f"RSI {rsi} < {cfg['rsi_buy']}"
+                
+                # Signal 2: Bollinger Band touch (only for scalp strategy)
+                if strategy_name == "SCALP":
+                    # Get more OHLC data for Bollinger calculation
+                    try:
+                        r = session.get(
+                            f"{KRAKEN_URL}/0/public/OHLC?pair={s['kraken_ohlc']}&interval={cfg['rsi_interval']}",
+                            timeout=30
+                        )
+                        data = r.json()
+                        if not data.get("error") and data["result"]:
+                            result = data["result"]
+                            key = [k for k in result.keys() if k != "last"][0]
+                            closes = [float(c[4]) for c in result[key][-50:]]  # Get more candles
+                            
+                            if is_lower_band_touch(price, closes):
+                                entry_signal = True
+                                signal_reason = f"Bollinger Band touch ${price:,.2f}"
+                    except Exception as e:
+                        log.error(f"Bollinger error {symbol}: {e}")
+                
+                if entry_signal:
+                    log.info(f"🎯 [{strategy_name}] BUY SIGNAL {symbol} | {signal_reason}")
+                    if TRADING_MODE == "live":
+                        qty = round(cfg["trade_size"] / price, 6)
+                        kraken_place_order(s["kraken_order"], "buy", qty)
+                    else:
+                        qty = buy_func(symbol, price)
+                        if qty is None: continue
+                    positions[symbol] = {"entry": price, "qty": qty, "time": datetime.now(timezone.utc).isoformat()}
+                    trades.append({
+                        "symbol": f"{symbol}/USD", "side": "BUY",
+                        "price": price, "qty": qty, "pnl": None,
+                        "reason": signal_reason,
+                        "strategy": strategy_name,
+                        "time": datetime.now(timezone.utc).isoformat()
+                    })
+                    log.info(f"📈 [{strategy_name}] BUY {symbol} @ ${price:,.2f}")
+                elif symbol not in positions:
+                    log.info(f"⏳ [{strategy_name}] {symbol} RSI={rsi} — waiting for signal")
 
         except Exception as e:
             log.error(f"[{strategy_name}] Tick error {symbol}: {e}")
@@ -371,8 +439,8 @@ def bot_tick():
 
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    log.info(f"⚡📈 APEX BOT DUAL STRATEGY – FINAL VERSION")
-    log.info(f"⚡ SCALP: RSI(1m) Buy<45 Sell>65 TP2% SL1% $100/trade")
+    log.info(f"⚡📈 APEX BOT DUAL STRATEGY – WITH BOLLINGER BANDS")
+    log.info(f"⚡ SCALP: RSI(1m) Buy<45 OR Bollinger Touch | Sell>65 TP2% SL1% $100/trade")
     log.info(f"📈 TREND: RSI(4h) Buy<45 Sell>75 TP5% SL4% $200/trade")
     log.info(f"💰 Initial Balances: Scalp $10,000 | Trend $10,000 | Total $20,000")
     
