@@ -13,24 +13,25 @@ KRAKEN_API_SECRET = os.environ.get("KRAKEN_API_SECRET", "")
 KRAKEN_URL        = "https://api.kraken.com"
 
 # ═══ SAFETY FEATURES ══════════════════════════════════════════════════════════
-MAX_DAILY_LOSS = 10.0           # Stop trading after losing $10 in a day
-MAX_POSITIONS = 4                # Never hold more than 4 positions total
-daily_loss = 0.0                 # Track today's losses
-last_reset_day = None            # Reset daily at midnight
+MAX_DAILY_LOSS = 10.0
+MAX_POSITIONS = 4
+daily_loss = 0.0
+last_reset_day = None
 
-# ═══ TELEGRAM CONFIG (Optional – set env vars to enable) ═════════════════════
+# ═══ TELEGRAM CONFIG ═════════════════════════════════════════════════════════
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# ═══ DUAL STRATEGY CONFIG ════════════════════════════════════════════════════
+# ═══ DUAL STRATEGY CONFIG – UPDATED ═══════════════════════════════════════════
 STRATEGIES = {
     "SCALP": {
         "rsi_interval": 1,        # 1-minute candles
         "rsi_buy": 45,            # buy when RSI < 45
-        "rsi_sell": 65,           # sell when RSI > 65
+        "rsi_sell": 60,           # ⬅️ LOWERED FROM 65 TO 60 – sell sooner
         "tp": 0.02,               # 2% take profit
         "sl": 0.01,               # 1% stop loss
         "trade_size": 100,        # $100 per trade
+        "max_hold_hours": 4,      # ⬅️ NEW – auto-sell after 4 hours
         "label": "⚡ Scalping",
         "color": "#f0b90b"
     },
@@ -81,9 +82,8 @@ session = requests.Session()
 retries = Retry(total=5, backoff_factor=2, status_forcelist=[502, 503, 504])
 session.mount('https://', HTTPAdapter(max_retries=retries))
 
-# ═══ TELEGRAM ALERTS ══════════════════════════════════════════════════════════
+# ═══ TELEGRAM ════════════════════════════════════════════════════════════════
 def send_telegram(message):
-    """Send message to Telegram if configured"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
@@ -95,39 +95,28 @@ def send_telegram(message):
 
 # ═══ SAFETY CHECKS ═══════════════════════════════════════════════════════════
 def check_safety_limits():
-    """Check all safety limits before trading"""
     global daily_loss, last_reset_day
-    
-    # 1. Emergency kill switch
     if os.path.exists("/tmp/STOP_TRADING"):
         log.warning("🛑 Emergency stop file detected – trading paused")
         return False
-    
-    # 2. Daily loss limit (reset at midnight)
     today = date.today().isoformat()
     if last_reset_day != today:
         daily_loss = 0.0
         last_reset_day = today
         log.info(f"📅 Daily loss counter reset: ${daily_loss:.2f}")
-    
-    # Calculate total loss today from stats
     total_today_loss = abs(min(0, scalp_stats["pnl"] + trend_stats["pnl"] - 
                                (scalp_stats.get("pnl_yesterday", 0) + trend_stats.get("pnl_yesterday", 0))))
-    
     if total_today_loss > MAX_DAILY_LOSS:
         log.warning(f"🛑 Daily loss limit reached (${total_today_loss:.2f} > ${MAX_DAILY_LOSS}) – stopping trades")
         send_telegram(f"⚠️ <b>Daily loss limit reached</b>\nLoss: ${total_today_loss:.2f}\nTrading paused until midnight")
         return False
-    
-    # 3. Max positions cap
     total_positions = len(scalp_positions) + len(trend_positions)
     if total_positions >= MAX_POSITIONS:
         log.info(f"⏳ Max positions reached ({total_positions}/{MAX_POSITIONS}) – waiting for exits")
         return False
-    
     return True
 
-# ═══ PRICES ══════════════════════════════════════════════════════════════════
+# ═══ PRICES & INDICATORS ═════════════════════════════════════════════════════
 def fetch_all_prices():
     global price_cache, last_price_cache
     temp = {}
@@ -290,7 +279,7 @@ def get_balances():
         return total, total, total
     return scalp_balance, trend_balance, scalp_balance + trend_balance
 
-# ═══ STRATEGY TICK ════════════════════════════════════════════════════════════
+# ═══ STRATEGY TICK – UPDATED WITH TIME EXIT ═══════════════════════════════════
 def run_strategy(strategy_name, cfg, positions, trades, stats, buy_func, sell_func):
     for s in SYMBOLS:
         symbol = s["symbol"]
@@ -312,6 +301,12 @@ def run_strategy(strategy_name, cfg, positions, trades, stats, buy_func, sell_fu
                     reason = f"Stop Loss {pct*100:.2f}%"
                 elif rsi is not None and rsi > cfg["rsi_sell"]:
                     reason = f"RSI Exit {rsi}"
+
+                # ⬅️ NEW: Time-based exit (only for scalp)
+                if strategy_name == "SCALP" and "max_hold_hours" in cfg:
+                    hold_time = datetime.now(timezone.utc) - datetime.fromisoformat(pos["time"])
+                    if hold_time.total_seconds() > cfg["max_hold_hours"] * 3600:
+                        reason = f"Time exit ({int(hold_time.total_seconds()/3600)}h)"
 
                 if reason:
                     is_win = pct >= 0
@@ -385,15 +380,12 @@ def run_strategy(strategy_name, cfg, positions, trades, stats, buy_func, sell_fu
         except Exception as e:
             log.error(f"[{strategy_name}] Tick error {symbol}: {e}")
 
-# ═══ SAVE STATE ═══════════════════════════════════════════════════════════════
+# ═══ SAVE/LOAD STATE (unchanged) ═════════════════════════════════════════════
 def save_state():
     try:
         scalp_bal, trend_bal, total_bal = get_balances()
-        
-        # Store yesterday's P&L for daily loss calculation
         scalp_stats["pnl_yesterday"] = scalp_stats.get("pnl", 0)
         trend_stats["pnl_yesterday"] = trend_stats.get("pnl", 0)
-        
         state = {
             "scalp": {
                 "balance": scalp_bal,
@@ -413,69 +405,55 @@ def save_state():
             "prices": price_cache,
             "updated": datetime.now(timezone.utc).isoformat()
         }
-        
         with open(STATE_PATH, "w") as f:
             json.dump(state, f)
-        
         backup_name = f"/data/state_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(backup_name, "w") as f:
             json.dump(state, f)
-        
         import glob
         backups = sorted(glob.glob("/data/state_*.json"))
         for old in backups[:-50]:
             os.remove(old)
-            
     except Exception as e:
         log.error(f"save_state error: {e}")
 
-# ═══ LOAD STATE ═══════════════════════════════════════════════════════════════
 def load_state():
     global scalp_balance, trend_balance, scalp_positions, trend_positions
     global scalp_trades, trend_trades, scalp_stats, trend_stats
-    
     try:
         if os.path.exists(STATE_PATH):
             with open(STATE_PATH) as f:
                 state = json.load(f)
-                
             scalp = state.get("scalp", {})
             trend = state.get("trend", {})
-            
             scalp_balance = scalp.get("balance", 10000.0)
             scalp_positions = scalp.get("positions", {})
             scalp_trades = scalp.get("trades", [])
             scalp_stats = scalp.get("stats", {"pnl":0, "wins":0, "losses":0})
-            
             trend_balance = trend.get("balance", 10000.0)
             trend_positions = trend.get("positions", {})
             trend_trades = trend.get("trades", [])
             trend_stats = trend.get("stats", {"pnl":0, "wins":0, "losses":0})
-            
             log.info(f"✅ Loaded state: Scalp ${scalp_balance:,.2f} Trend ${trend_balance:,.2f}")
             return True
     except Exception as e:
         log.error(f"load_state error: {e}")
-    
     return False
 
 # ═══ BOT TICK ════════════════════════════════════════════════════════════════
 def bot_tick():
     global rsi_cache, active_strategy
     rsi_cache = {}
-    
-    # Read active strategy from dashboard
     try:
         if os.path.exists("/tmp/active_strategy.txt"):
             with open("/tmp/active_strategy.txt") as f:
                 active_strategy = f.read().strip()
     except: pass
-    
-    # ⚠️ SAFETY CHECK – Stop if limits exceeded
+
     if not check_safety_limits():
         save_state()
         return
-    
+
     scalp_bal, trend_bal, total_bal = get_balances()
     now = datetime.now(timezone.utc).strftime('%H:%M:%S')
     log.info(f"--- Tick {now} | {TRADING_MODE.upper()} | Total: ${total_bal:,.2f} (Scalp: ${scalp_bal:,.2f} Trend: ${trend_bal:,.2f}) | View: {active_strategy} ---")
@@ -484,7 +462,6 @@ def bot_tick():
         log.error("No prices available")
         return
 
-    # ALWAYS run both strategies
     run_strategy("SCALP", STRATEGIES["SCALP"], scalp_positions, scalp_trades, scalp_stats, paper_buy_scalp, paper_sell_scalp)
     run_strategy("TREND", STRATEGIES["TREND"], trend_positions, trend_trades, trend_stats, paper_buy_trend, paper_sell_trend)
 
@@ -492,19 +469,19 @@ def bot_tick():
 
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    log.info(f"⚡📈 APEX BOT – FINAL SAFETY EDITION")
-    log.info(f"⚡ SCALP: RSI(1m) Buy<45 OR Bollinger | Sell>65 TP2% SL1% $100")
+    log.info(f"⚡📈 APEX BOT – FASTER EXITS EDITION")
+    log.info(f"⚡ SCALP: RSI(1m) Buy<45 OR Bollinger | Sell>60 TP2% SL1% | Time exit 4h")
     log.info(f"📈 TREND: RSI(4h) Buy<45 Sell>75 TP5% SL4% $200")
     log.info(f"🛡️ Safety: Max daily loss ${MAX_DAILY_LOSS} | Max positions {MAX_POSITIONS}")
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         log.info(f"📱 Telegram alerts: ENABLED")
-        send_telegram("🚀 <b>APEX BOT STARTED</b>\nSafety features active")
+        send_telegram("🚀 <b>APEX BOT STARTED</b>\nFaster exits edition")
     else:
         log.info(f"📱 Telegram alerts: DISABLED (set TELEGRAM_* env vars to enable)")
-    
+
     if not load_state():
         log.info("No existing state found, starting fresh")
-    
+
     if TRADING_MODE == "live":
         if not KRAKEN_API_KEY or not KRAKEN_API_SECRET:
             log.error("❌ Missing API keys!")
@@ -512,10 +489,10 @@ if __name__ == "__main__":
         log.info(f"💰 Live Mode – Using real Kraken balance")
     else:
         log.info(f"💰 Paper Mode – Balances: Scalp ${scalp_balance:,.2f} Trend ${trend_balance:,.2f}")
-    
+
     save_state()
     fetch_all_prices()
-    
+
     while True:
         try:
             bot_tick()
