@@ -5,8 +5,9 @@ from datetime import datetime
 
 STATE_FILE = "/data/state.json"  # Use persistent storage
 active_strategy = "SCALP"  # Default view
+TRADING_MODE = os.environ.get("TRADING_MODE", "paper")  # Read mode
 
-# HTML Template
+# HTML Template with Manual Close Button
 HTML = """<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8"/>
@@ -41,6 +42,11 @@ body{background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;min-
 .btn-label{font-size:13px;font-weight:500;letter-spacing:.05em}
 .btn-desc{font-size:10px;color:var(--muted);margin-top:3px}
 .btn-active-badge{display:inline-block;margin-top:6px;font-size:9px;padding:2px 8px;border-radius:4px;letter-spacing:.1em}
+
+/* Manual Close Button */
+.close-btn-container{margin:10px 24px;text-align:center}
+.close-btn{background:#ef4444;color:white;border:none;padding:12px 24px;border-radius:8px;font-size:14px;cursor:pointer;font-family:'DM Mono',monospace;font-weight:bold;transition:all .2s;border:1px solid #ef4444}
+.close-btn:hover{background:#dc2626;transform:translateY(-2px);box-shadow:0 0 15px rgba(239,68,68,0.3)}
 
 .body{padding:0 24px 24px;max-width:1200px;margin:0 auto}
 
@@ -111,7 +117,7 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
   <a href="/set_strategy?mode=SCALP" class="strat-btn __SCALP_ACTIVE__">
     <div class="btn-icon">⚡</div>
     <div class="btn-label" style="color:#f0b90b">SCALPING</div>
-    <div class="btn-desc">1min RSI • $100 • TP2% SL1%</div>
+    <div class="btn-desc">1min RSI • $100 • TP1% SL0.3%</div>
     __SCALP_BADGE__
   </a>
   <a href="/set_strategy?mode=TREND" class="strat-btn __TREND_ACTIVE__">
@@ -120,6 +126,13 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
     <div class="btn-desc">4h RSI • $200 • TP5% SL4%</div>
     __TREND_BADGE__
   </a>
+</div>
+
+<!-- MANUAL CLOSE BUTTON (PAPER MODE ONLY) -->
+<div class="close-btn-container">
+  <button onclick="closeAllPositions()" class="close-btn">
+    🛑 CLOSE ALL POSITIONS (Paper Mode Only)
+  </button>
 </div>
 
 <div class="body">
@@ -178,12 +191,42 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
   </div>
 
   <div class="footer">
-    <span>⚡ Scalp: RSI(1m) Buy<45 Sell>65 TP2% SL1% $100</span>
+    <span>⚡ Scalp: RSI(1m) Buy<45 Sell>55 TP1% SL0.3% $100 | Time exit 1h</span>
     <span>📈 Trend: RSI(4h) Buy<45 Sell>75 TP5% SL4% $200</span>
     <span style="color:__ACTIVE_COLOR__">Active: __ACTIVE_STRATEGY__</span>
   </div>
   <div class="refresh-note">⟳ Auto-refreshes every 30 seconds</div>
 </div>
+
+<script>
+function closeAllPositions() {
+  if (!confirm('⚠️ This will close ALL open positions in PAPER mode. Continue?')) return;
+  
+  const btn = document.querySelector('.close-btn');
+  const originalText = btn.innerText;
+  btn.innerText = '⏳ Closing...';
+  btn.disabled = true;
+  
+  fetch('/close_all')
+    .then(response => {
+      if (response.ok) {
+        alert('✅ Close signal sent. Positions will be closed within 30 seconds.');
+        setTimeout(() => location.reload(), 2000);
+      } else {
+        response.text().then(text => {
+          alert('❌ Error: ' + text);
+          btn.innerText = originalText;
+          btn.disabled = false;
+        });
+      }
+    })
+    .catch(err => {
+      alert('❌ Fetch error: ' + err);
+      btn.innerText = originalText;
+      btn.disabled = false;
+    });
+}
+</script>
 
 </body></html>"""
 
@@ -224,9 +267,9 @@ def render(state, view_mode):
         strategy_name = "SCALPING"
         strategy_icon = "⚡"
         color = "#f0b90b"
-        tp = 0.02
-        sl = 0.01
-        desc = "1min RSI • Buy <45 • Sell >65 • TP 2% • SL 1% • $100/trade"
+        tp = 0.01
+        sl = 0.003
+        desc = "1min RSI • Buy <45 • Sell >55 • TP 1% • SL 0.3% • Time exit 1h • $100/trade"
         tag_text = "SCALP"
         tag_class = "tag-scalp"
     else:
@@ -260,7 +303,6 @@ def render(state, view_mode):
     </div>
     '''
 
-    # FIXED: Coin cards with correct tags based on view mode
     coin_cards = ""
     for sym, cls in COIN_COLORS.items():
         price = prices.get(sym, 0)
@@ -268,7 +310,6 @@ def render(state, view_mode):
         in_trend = sym in trend.get("positions", {})
         tags = []
         
-        # Only show tags for the CURRENT VIEW's positions
         if view_mode == "SCALP" and in_scalp:
             tags.append(f'<span class="strategy-tag {tag_class}">{strategy_icon}{tag_text}</span>')
         elif view_mode == "TREND" and in_trend:
@@ -321,7 +362,7 @@ def render(state, view_mode):
     html = html.replace("__WINS__", str(wins))
     html = html.replace("__LOSSES__", str(losses))
     html = html.replace("__TP__", str(int(tp*100)))
-    html = html.replace("__SL__", str(int(sl*100)))
+    html = html.replace("__SL__", str(int(sl*100) if sl >= 0.01 else str(int(sl*1000)/10)))  # Handle 0.3% display
     html = html.replace("__POSITIONS_LIST__", render_positions(positions, prices, tp, sl))
     html = html.replace("__COIN_CARDS__", coin_cards)
     html = html.replace("__TRADE_COUNT__", str(total_trades))
@@ -342,6 +383,7 @@ class Handler(BaseHTTPRequestHandler):
         global active_strategy
         parsed = urlparse(self.path)
 
+        # Strategy switching
         if parsed.path == "/set_strategy":
             params = parse_qs(parsed.query)
             mode = params.get("mode", ["SCALP"])[0].upper()
@@ -354,6 +396,26 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        # Manual close endpoint
+        if parsed.path == "/close_all":
+            if TRADING_MODE == "paper":
+                try:
+                    with open("/tmp/CLOSE_ALL", "w") as f:
+                        f.write("1")
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"Close signal sent")
+                except Exception as e:
+                    self.send_response(500)
+                    self.end_headers()
+                    self.wfile.write(str(e).encode())
+            else:
+                self.send_response(403)
+                self.end_headers()
+                self.wfile.write(b"Manual close only available in paper mode")
+            return
+
+        # Serve dashboard
         try:
             if os.path.exists("/tmp/active_strategy.txt"):
                 with open("/tmp/active_strategy.txt") as f:
