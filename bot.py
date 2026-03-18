@@ -286,24 +286,32 @@ def check_safety_limits_basic():
         return False
     return True
 
+# ═══ CLOSE ALL POSITIONS – ⚠️ TEMPORARY OVERRIDE ⚠️ ═══════════════════════════
 def close_all_positions():
-    if TRADING_MODE != "paper":
-        log.warning("Manual close attempted in live mode – ignored")
-        return
-    log.info("🛑 Manual close initiated")
+    # 🔴 TEMPORARY OVERRIDE – REMOVE AFTER POSITIONS ARE CLOSED
+    # if TRADING_MODE != "paper":
+    #     log.warning("Manual close attempted in live mode – ignored")
+    #     return
+    log.info("🛑 Manual close initiated (OVERRIDE ACTIVE – will close regardless of mode)")
+    
+    # Close all scalp positions
     for symbol, pos in list(scalp_positions.items()):
         price = price_cache.get(symbol, pos["entry"])
         pnl = pos["qty"] * (price - pos["entry"])
         paper_sell_scalp(symbol, price, pos["qty"], pnl)
         del scalp_positions[symbol]
+    
+    # Close all trend positions
     for symbol, pos in list(trend_positions.items()):
         price = price_cache.get(symbol, pos["entry"])
         pnl = pos["qty"] * (price - pos["entry"])
         paper_sell_trend(symbol, price, pos["qty"], pnl)
         del trend_positions[symbol]
+    
     save_state()
     log.info("✅ All positions closed manually")
     send_telegram("🛑 <b>Manual close executed</b>\nAll positions closed.")
+# ═══════════════════════════════════════════════════════════════════════════
 
 # ═══ PRICES & INDICATORS ═════════════════════════════════════════════════════
 def fetch_all_prices():
