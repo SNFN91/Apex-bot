@@ -2,6 +2,7 @@ import os, time, hmac, hashlib, requests, json, logging, base64, urllib.parse
 from datetime import datetime, timezone, date
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import numpy as np
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 log = logging.getLogger(__name__)
@@ -24,7 +25,22 @@ MAX_POSITIONS = 4
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# ═══ DUAL STRATEGY CONFIG – $50/DAY EDITION ═══════════════════════════════════
+# ═══ VOLUME FILTER CONFIG (optional) ═════════════════════════════════════════
+VOLUME_FILTER_ENABLED = False   # Set to True to enable volume filter
+VOLUME_MULTIPLIER = 2.0
+VOLUME_PERIOD = 20
+
+# ═══ TREND FILTER CONFIG ═════════════════════════════════════════════════════
+TREND_FILTER_ENABLED = True
+TREND_EMA_PERIOD = 20
+
+# ═══ MARKET REGIME DETECTION (NEW – PHASE 1 AI) ═════════════════════════════
+REGIME_DETECTION_ENABLED = True
+REGIME_LOOKBACK = 30          # Number of 1-min candles to analyze
+VOLATILITY_THRESHOLD = 1.5    # Multiplier of average volatility to be considered 'volatile'
+TREND_THRESHOLD = 0.5         # Minimum price change % to be considered trending
+
+# ═══ DUAL STRATEGY CONFIG – BTC/ETH FOCUS ════════════════════════════════════
 STRATEGIES = {
     "SCALP": {
         "rsi_interval": 1,
@@ -49,11 +65,10 @@ STRATEGIES = {
     }
 }
 
+# Only BTC and ETH
 SYMBOLS = [
     {"symbol": "BTC", "kraken_ticker": "XXBTZUSD", "kraken_ohlc": "XBTUSD",  "kraken_order": "XXBTZUSD"},
     {"symbol": "ETH", "kraken_ticker": "XETHZUSD", "kraken_ohlc": "ETHUSD",  "kraken_order": "XETHZUSD"},
-    {"symbol": "SOL", "kraken_ticker": "SOLUSD",   "kraken_ohlc": "SOLUSD",  "kraken_order": "SOLUSD"},
-    {"symbol": "XRP", "kraken_ticker": "XXRPZUSD", "kraken_ohlc": "XRPUSD",  "kraken_order": "XXRPZUSD"},
 ]
 
 # ═══ STATE ═══════════════════════════════════════════════════════════════════
@@ -94,7 +109,7 @@ def send_telegram(message):
     except Exception as e:
         log.error(f"Telegram error: {e}")
 
-# ═══ SAFETY CHECKS (basic: only emergency & daily limits) ════════════════════
+# ═══ SAFETY CHECKS (basic) ═══════════════════════════════════════════════════
 def check_safety_limits_basic():
     global daily_loss, daily_profit, last_reset_day
     if os.path.exists("/tmp/STOP_TRADING"):
@@ -121,18 +136,15 @@ def check_safety_limits_basic():
 
 # ═══ MANUAL CLOSE FUNCTION ═══════════════════════════════════════════════════
 def close_all_positions():
-    """Close all open positions (paper mode only)"""
     if TRADING_MODE != "paper":
         log.warning("Manual close attempted in live mode – ignored")
         return
     log.info("🛑 Manual close initiated")
-    # Close scalp positions
     for symbol, pos in list(scalp_positions.items()):
         price = price_cache.get(symbol, pos["entry"])
         pnl = pos["qty"] * (price - pos["entry"])
         paper_sell_scalp(symbol, price, pos["qty"], pnl)
         del scalp_positions[symbol]
-    # Close trend positions
     for symbol, pos in list(trend_positions.items()):
         price = price_cache.get(symbol, pos["entry"])
         pnl = pos["qty"] * (price - pos["entry"])
@@ -226,6 +238,101 @@ def is_lower_band_touch(price, prices, threshold_pct=0.01):
         return True
     return False
 
+# ═══ VOLUME FILTER FUNCTION ══════════════════════════════════════════════════
+def volume_spike_detected(kraken_ohlc, interval):
+    try:
+        r = session.get(
+            f"{KRAKEN_URL}/0/public/OHLC?pair={kraken_ohlc}&interval={interval}",
+            timeout=30
+        )
+        data = r.json()
+        if data.get("error") or not data["result"]:
+            return False, 0, 0
+        result = data["result"]
+        key = [k for k in result.keys() if k != "last"][0]
+        candles = result[key]
+        if len(candles) < VOLUME_PERIOD + 1:
+            return False, 0, 0
+        volumes = [float(c[6]) for c in candles[-VOLUME_PERIOD-1:]]
+        current_volume = volumes[-1]
+        avg_volume = sum(volumes[:-1]) / VOLUME_PERIOD
+        spike = current_volume > avg_volume * VOLUME_MULTIPLIER
+        return spike, current_volume, avg_volume
+    except Exception as e:
+        log.error(f"Volume filter error: {e}")
+        return False, 0, 0
+
+# ═══ TREND FILTER FUNCTION ═══════════════════════════════════════════════════
+def price_above_ema(kraken_ohlc, symbol, interval, current_price):
+    """Check if current price is above the SMA (simple moving average)"""
+    try:
+        r = session.get(
+            f"{KRAKEN_URL}/0/public/OHLC?pair={kraken_ohlc}&interval={interval}",
+            timeout=30
+        )
+        data = r.json()
+        if data.get("error") or not data["result"]:
+            return False
+        result = data["result"]
+        key = [k for k in result.keys() if k != "last"][0]
+        closes = [float(c[4]) for c in result[key][-TREND_EMA_PERIOD:]]
+        if len(closes) < TREND_EMA_PERIOD:
+            return False
+        sma = sum(closes) / TREND_EMA_PERIOD
+        return current_price > sma
+    except Exception as e:
+        log.error(f"Trend filter error: {e}")
+        return False
+
+# ═══ MARKET REGIME DETECTION (NEW – PHASE 1 AI) ══════════════════════════════
+def detect_market_regime(kraken_ohlc, interval):
+    """
+    Returns: 'trending_up', 'trending_down', 'ranging', 'volatile'
+    """
+    try:
+        r = session.get(
+            f"{KRAKEN_URL}/0/public/OHLC?pair={kraken_ohlc}&interval={interval}",
+            timeout=30
+        )
+        data = r.json()
+        if data.get("error") or not data["result"]:
+            return 'ranging'  # default safe mode
+        result = data["result"]
+        key = [k for k in result.keys() if k != "last"][0]
+        candles = result[key]
+        if len(candles) < REGIME_LOOKBACK:
+            return 'ranging'
+        
+        # Extract close prices
+        closes = np.array([float(c[4]) for c in candles[-REGIME_LOOKBACK:]])
+        returns = np.diff(closes) / closes[:-1]
+        
+        # Volatility measure (standard deviation of returns)
+        volatility = np.std(returns)
+        
+        # Momentum (total price change over the period)
+        momentum = (closes[-1] - closes[0]) / closes[0] * 100  # percent
+        
+        # Historical volatility baseline (simple average of past volatilities)
+        # For simplicity, we compare current volatility to the average of the last 5 periods
+        if len(closes) > REGIME_LOOKBACK + 5:
+            past_vol = np.std(np.diff(closes[-REGIME_LOOKBACK-5:-5]) / closes[-REGIME_LOOKBACK-5:-5])
+        else:
+            past_vol = volatility
+        
+        # Classify
+        if volatility > past_vol * VOLATILITY_THRESHOLD:
+            return 'volatile'
+        elif momentum > TREND_THRESHOLD:
+            return 'trending_up'
+        elif momentum < -TREND_THRESHOLD:
+            return 'trending_down'
+        else:
+            return 'ranging'
+    except Exception as e:
+        log.error(f"Regime detection error: {e}")
+        return 'ranging'
+
 # ═══ KRAKEN LIVE ══════════════════════════════════════════════════════════════
 def kraken_sign(urlpath, data):
     postdata = urllib.parse.urlencode(data)
@@ -305,7 +412,7 @@ def get_balances():
         return total, total, total
     return scalp_balance, trend_balance, scalp_balance + trend_balance
 
-# ═══ EXIT CHECKS (always run) ═════════════════════════════════════════════════
+# ═══ EXIT CHECKS ═════════════════════════════════════════════════════════════
 def run_exits(strategy_name, cfg, positions, trades, stats, sell_func):
     for s in SYMBOLS:
         symbol = s["symbol"]
@@ -326,7 +433,6 @@ def run_exits(strategy_name, cfg, positions, trades, stats, sell_func):
             elif rsi is not None and rsi > cfg["rsi_sell"]:
                 reason = f"RSI Exit {rsi}"
 
-            # Time-based exit
             if strategy_name == "SCALP" and "max_hold_hours" in cfg:
                 hold_time = datetime.now(timezone.utc) - datetime.fromisoformat(pos["time"])
                 if hold_time.total_seconds() > cfg["max_hold_hours"] * 3600:
@@ -355,7 +461,7 @@ def run_exits(strategy_name, cfg, positions, trades, stats, sell_func):
         except Exception as e:
             log.error(f"[{strategy_name}] Exit error {symbol}: {e}")
 
-# ═══ ENTRY CHECKS (only if under max positions) ═══════════════════════════════
+# ═══ ENTRY CHECKS – WITH REGIME DETECTION ════════════════════════════════════
 def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
     total_positions = len(scalp_positions) + len(trend_positions)
     if total_positions >= MAX_POSITIONS:
@@ -369,14 +475,25 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
             if symbol in positions:
                 continue
 
+            # Detect market regime (only once per symbol per tick, but we do it per symbol for simplicity)
+            regime = detect_market_regime(s["kraken_ohlc"], cfg["rsi_interval"])
+            log.info(f"[{strategy_name}] {symbol} market regime: {regime}")
+
+            # If regime is trending_down, block new long entries (for scalp)
+            if strategy_name == "SCALP" and regime == 'trending_down' and REGIME_DETECTION_ENABLED:
+                log.info(f"⏳ [{strategy_name}] {symbol} skipping entry due to downtrend regime")
+                continue
+
             rsi = get_rsi(s["kraken_ohlc"], symbol, cfg["rsi_interval"])
             entry_signal = False
             signal_reason = ""
 
+            # Signal 1: RSI
             if rsi is not None and rsi < cfg["rsi_buy"]:
                 entry_signal = True
                 signal_reason = f"RSI {rsi} < {cfg['rsi_buy']}"
 
+            # Signal 2: Bollinger touch (scalp only)
             if strategy_name == "SCALP" and not entry_signal:
                 try:
                     r = session.get(
@@ -394,24 +511,64 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                 except Exception as e:
                     log.error(f"Bollinger error {symbol}: {e}")
 
+            # Trend filter (if enabled)
+            if entry_signal and strategy_name == "SCALP" and TREND_FILTER_ENABLED:
+                if not price_above_ema(s["kraken_ohlc"], symbol, cfg["rsi_interval"], price):
+                    log.info(f"⏳ [{strategy_name}] {symbol} signal blocked by trend filter (price below EMA)")
+                    continue
+                else:
+                    signal_reason += " | Trend up"
+
+            # Volume filter (if enabled)
+            if entry_signal and strategy_name == "SCALP" and VOLUME_FILTER_ENABLED:
+                spike, curr_vol, avg_vol = volume_spike_detected(s["kraken_ohlc"], cfg["rsi_interval"])
+                if not spike:
+                    log.info(f"⏳ [{strategy_name}] {symbol} signal blocked by volume filter (curr={curr_vol:.0f}, avg={avg_vol:.0f})")
+                    continue
+                else:
+                    signal_reason += f" | Volume spike ({curr_vol/avg_vol:.1f}x)"
+
             if entry_signal:
+                # Adjust trade size based on regime (reduce in volatile markets)
+                trade_size = cfg["trade_size"]
+                if regime == 'volatile' and REGIME_DETECTION_ENABLED:
+                    trade_size = int(trade_size * 0.5)  # reduce by half
+                    log.info(f"[{strategy_name}] {symbol} volatile regime – reducing trade size to ${trade_size}")
+
                 log.info(f"🎯 [{strategy_name}] BUY SIGNAL {symbol} | {signal_reason}")
                 if TRADING_MODE == "live":
-                    qty = round(cfg["trade_size"] / price, 6)
+                    qty = round(trade_size / price, 6)
                     kraken_place_order(s["kraken_order"], "buy", qty)
                 else:
-                    qty = buy_func(symbol, price)
-                    if qty is None: continue
-                positions[symbol] = {"entry": price, "qty": qty, "time": datetime.now(timezone.utc).isoformat()}
+                    # For paper, we need to use the adjusted size; paper_buy_scalp uses the config size, so we must adapt
+                    # Simple approach: create a temporary override by calling a modified buy function
+                    # To keep things clean, we'll pass the adjusted size to a helper.
+                    # For simplicity, we'll just use the original buy function with the config size,
+                    # but for volatility we'd ideally adjust. Let's implement a quick override:
+                    if trade_size != cfg["trade_size"]:
+                        # Use a temporary function or directly adjust the buy
+                        qty = round(trade_size / price, 6)
+                        cost = qty * price
+                        if scalp_balance < cost:
+                            log.warning(f"Insufficient scalp balance for {symbol} with reduced size")
+                            continue
+                        scalp_balance -= cost
+                        log.info(f"📄 ⚡ SCALP BUY {symbol} qty={qty} @ ${price:,.2f} (volatile size) | Scalp Balance: ${scalp_balance:,.2f}")
+                        send_telegram(f"🟢 <b>SCALP BUY (volatile)</b>\n{symbol} @ ${price:,.2f}\nQty: {qty}\nBalance: ${scalp_balance:,.2f}")
+                        qty_actual = qty
+                    else:
+                        qty_actual = buy_func(symbol, price)
+                        if qty_actual is None: continue
+                positions[symbol] = {"entry": price, "qty": qty_actual, "time": datetime.now(timezone.utc).isoformat()}
                 trades.append({
                     "symbol": f"{symbol}/USD", "side": "BUY",
-                    "price": price, "qty": qty, "pnl": None,
+                    "price": price, "qty": qty_actual, "pnl": None,
                     "reason": signal_reason,
                     "strategy": strategy_name,
                     "time": datetime.now(timezone.utc).isoformat()
                 })
-                log.info(f"📈 [{strategy_name}] BUY {symbol} @ ${price:,.2f}")
-                break  # one buy per tick
+                log.info(f"📈 [{strategy_name}] BUY {symbol} @ ${price:,.2f} (size: {qty_actual})")
+                break
             else:
                 log.info(f"⏳ [{strategy_name}] {symbol} RSI={rsi} — waiting for signal")
 
@@ -479,7 +636,7 @@ def load_state():
         log.error(f"load_state error: {e}")
     return False
 
-# ═══ BOT TICK – FIXED + MANUAL CLOSE CHECK ═══════════════════════════════════
+# ═══ BOT TICK ════════════════════════════════════════════════════════════════
 def bot_tick():
     global rsi_cache, active_strategy
     rsi_cache = {}
@@ -489,7 +646,6 @@ def bot_tick():
                 active_strategy = f.read().strip()
     except: pass
 
-    # Check for manual close signal
     if os.path.exists("/tmp/CLOSE_ALL"):
         log.info("🛑 Manual close signal detected")
         if TRADING_MODE == "paper":
@@ -498,7 +654,6 @@ def bot_tick():
             log.warning("Manual close signal ignored in live mode")
         os.remove("/tmp/CLOSE_ALL")
 
-    # Basic safety checks (no max positions check)
     if not check_safety_limits_basic():
         save_state()
         return
@@ -511,11 +666,9 @@ def bot_tick():
         log.error("No prices available")
         return
 
-    # ALWAYS run exits
     run_exits("SCALP", STRATEGIES["SCALP"], scalp_positions, scalp_trades, scalp_stats, paper_sell_scalp)
     run_exits("TREND", STRATEGIES["TREND"], trend_positions, trend_trades, trend_stats, paper_sell_trend)
 
-    # Only run entries if under max positions
     total_positions = len(scalp_positions) + len(trend_positions)
     if total_positions < MAX_POSITIONS:
         run_entries("SCALP", STRATEGIES["SCALP"], scalp_positions, scalp_trades, scalp_stats, paper_buy_scalp)
@@ -527,13 +680,19 @@ def bot_tick():
 
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    log.info(f"⚡📈 APEX BOT – $50/DAY EDITION (with manual close)")
-    log.info(f"⚡ SCALP: RSI(1m) Buy<45 OR Bollinger | Sell>55 TP1% SL0.3% | Time exit 1h")
+    log.info(f"⚡📈 APEX BOT – BTC/ETH FOCUS + REGIME DETECTION (AI PHASE 1)")
+    log.info(f"⚡ SCALP: RSI(1m) Buy<45 OR Bollinger | Sell>55 TP1% SL0.3% | Time exit 1h | Trend filter: {TREND_FILTER_ENABLED}")
+    if REGIME_DETECTION_ENABLED:
+        log.info(f"🧠 Market regime detection: ON (blocks buys in downtrend, halves size in volatile)")
+    if VOLUME_FILTER_ENABLED:
+        log.info(f"📊 Volume filter: ON (>{VOLUME_MULTIPLIER}x avg, {VOLUME_PERIOD} periods)")
+    else:
+        log.info(f"📊 Volume filter: OFF")
     log.info(f"📈 TREND: RSI(4h) Buy<45 Sell>75 TP5% SL4% $200")
     log.info(f"🎯 Daily profit target: ${DAILY_PROFIT_TARGET} | Daily loss limit: ${MAX_DAILY_LOSS} | Max positions: {MAX_POSITIONS}")
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         log.info(f"📱 Telegram alerts: ENABLED")
-        send_telegram(f"🚀 <b>APEX BOT STARTED – $50/DAY EDITION</b>\nTP: 1% | SL: 0.3% | RSI sell: 55\nTime exit: 1h\nDaily target: ${DAILY_PROFIT_TARGET}")
+        send_telegram(f"🚀 <b>APEX BOT STARTED – AI PHASE 1</b>\nRegime detection ON\nTP: 1% | SL: 0.3%\nDaily target: ${DAILY_PROFIT_TARGET}")
     else:
         log.info(f"📱 Telegram alerts: DISABLED (set TELEGRAM_* env vars to enable)")
 
