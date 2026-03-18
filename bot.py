@@ -28,7 +28,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # ═══ VOLUME FILTER CONFIG (optional) ═════════════════════════════════════════
-VOLUME_FILTER_ENABLED = False   # Set to True to enable volume filter
+VOLUME_FILTER_ENABLED = False
 VOLUME_MULTIPLIER = 2.0
 VOLUME_PERIOD = 20
 
@@ -42,29 +42,32 @@ REGIME_LOOKBACK = 30
 VOLATILITY_THRESHOLD = 1.5
 TREND_THRESHOLD = 0.5
 
+# ═══ RSI CONFIG (NEW) ════════════════════════════════════════════════════════
+RSI_PERIOD = 7                       # Shorter period for faster scalping
+
 # ═══ DYNAMIC RSI ADAPTATION (PHASE 2) ════════════════════════════════════════
-DYNAMIC_RSI_ENABLED = True               # Master switch
-RSI_CANDIDATES = [43, 44, 45, 46, 47]    # Possible RSI buy thresholds
-DEFAULT_RSI_BUY = 45                      # Fallback if not enough data
-RSI_PERFORMANCE_WINDOW = 50               # Number of recent trades to evaluate
+DYNAMIC_RSI_ENABLED = True
+RSI_CANDIDATES = [18, 19, 20, 21, 22]   # Now centered around 20
+DEFAULT_RSI_BUY = 20
+RSI_PERFORMANCE_WINDOW = 50
 rsi_performance = {val: {'wins': 0, 'losses': 0, 'total_pnl': 0.0, 'trades': []} for val in RSI_CANDIDATES}
 current_rsi_buy = DEFAULT_RSI_BUY
 rsi_adapt_counter = 0
-RSI_ADAPT_FREQUENCY = 20                   # Re‑evaluate every N trades
+RSI_ADAPT_FREQUENCY = 20
 
 # ═══ HOURLY TELEGRAM SUMMARY (PHASE 2) ═══════════════════════════════════════
 last_hour_summary = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-hourly_trades = []                          # Trades in current hour
+hourly_trades = []
 
-# ═══ DUAL STRATEGY CONFIG – BTC/ETH FOCUS ════════════════════════════════════
+# ═══ DUAL STRATEGY CONFIG – Scalp only BTC, Trend both ═══════════════════════
 STRATEGIES = {
     "SCALP": {
         "rsi_interval": 1,
-        "rsi_buy": current_rsi_buy,          # Will be updated dynamically
-        "rsi_sell": 55,
+        "rsi_buy": current_rsi_buy,          # dynamic
+        "rsi_sell": 80,                       # ⬅️ changed to 80
         "tp": 0.01,
         "sl": 0.003,
-        "trade_size": 100,
+        "trade_size": 50,                      # ⬅️ reduced to $50 temporarily
         "max_hold_hours": 1,
         "label": "⚡ Scalping",
         "color": "#f0b90b"
@@ -81,7 +84,8 @@ STRATEGIES = {
     }
 }
 
-# Only BTC and ETH
+# ═══ SYMBOLS – Scalp only BTC, Trend both ════════════════════════════════════
+# For scalp, we'll filter in the entry/exit loops; we keep both in SYMBOLS but handle per strategy.
 SYMBOLS = [
     {"symbol": "BTC", "kraken_ticker": "XXBTZUSD", "kraken_ohlc": "XBTUSD",  "kraken_order": "XXBTZUSD"},
     {"symbol": "ETH", "kraken_ticker": "XETHZUSD", "kraken_ohlc": "ETHUSD",  "kraken_order": "XETHZUSD"},
@@ -147,7 +151,6 @@ def send_hourly_summary():
     hourly_trades = []
 
 def check_hourly_summary():
-    """Check if a new hour has started and send summary."""
     global last_hour_summary
     now = datetime.now(timezone.utc)
     current_hour = now.replace(minute=0, second=0, microsecond=0)
@@ -157,31 +160,25 @@ def check_hourly_summary():
 
 # ═══ DYNAMIC RSI ADAPTATION ══════════════════════════════════════════════════
 def update_rsi_performance(trade):
-    """Record trade outcome for the RSI threshold that was used."""
     global rsi_performance, rsi_adapt_counter, current_rsi_buy
-    # trade should have keys: 'rsi_buy_used', 'pnl'
     rsi_val = trade.get('rsi_buy_used')
     if rsi_val is None or rsi_val not in rsi_performance:
         return
     perf = rsi_performance[rsi_val]
     perf['trades'].append(trade)
     if len(perf['trades']) > RSI_PERFORMANCE_WINDOW:
-        old = perf['trades'].pop(0)
-        # remove its contribution from totals (simplified, we just recompute later)
-    # For simplicity, we'll recompute stats from the stored trades periodically.
-    # We'll store raw trades and compute on adaptation.
+        perf['trades'].pop(0)
     rsi_adapt_counter += 1
     if rsi_adapt_counter >= RSI_ADAPT_FREQUENCY:
         adapt_rsi_threshold()
         rsi_adapt_counter = 0
 
 def adapt_rsi_threshold():
-    """Re‑evaluate which RSI threshold has performed best and update current_rsi_buy."""
     global current_rsi_buy
     best_val = DEFAULT_RSI_BUY
     best_win_rate = -1
     for val, perf in rsi_performance.items():
-        if len(perf['trades']) < 5:  # need minimum data
+        if len(perf['trades']) < 5:
             continue
         wins = sum(1 for t in perf['trades'] if t['pnl'] > 0)
         losses = sum(1 for t in perf['trades'] if t['pnl'] < 0)
@@ -196,10 +193,9 @@ def adapt_rsi_threshold():
         log.info(f"🔄 Adapting RSI buy threshold from {current_rsi_buy} to {best_val} (win rate {best_win_rate:.2%})")
         current_rsi_buy = best_val
         STRATEGIES["SCALP"]["rsi_buy"] = current_rsi_buy
-        # Optionally send Telegram notification
         send_telegram(f"🔄 RSI buy threshold changed to {current_rsi_buy}")
 
-# ═══ SAFETY CHECKS (basic) ═══════════════════════════════════════════════════
+# ═══ SAFETY CHECKS ═══════════════════════════════════════════════════════════
 def check_safety_limits_basic():
     global daily_loss, daily_profit, last_reset_day
     if os.path.exists("/tmp/STOP_TRADING"):
@@ -224,7 +220,6 @@ def check_safety_limits_basic():
         return False
     return True
 
-# ═══ MANUAL CLOSE FUNCTION ═══════════════════════════════════════════════════
 def close_all_positions():
     if TRADING_MODE != "paper":
         log.warning("Manual close attempted in live mode – ignored")
@@ -244,7 +239,7 @@ def close_all_positions():
     log.info("✅ All positions closed manually")
     send_telegram("🛑 <b>Manual close executed</b>\nAll positions closed.")
 
-# ═══ PRICES & INDICATORS (unchanged) ═════════════════════════════════════════
+# ═══ PRICES & INDICATORS ═════════════════════════════════════════════════════
 def fetch_all_prices():
     global price_cache, last_price_cache
     temp = {}
@@ -276,7 +271,10 @@ def get_rsi(kraken_ohlc, symbol, interval):
     if cache_key in rsi_cache:
         return rsi_cache[cache_key]
     try:
-        r = session.get(f"{KRAKEN_URL}/0/public/OHLC?pair={kraken_ohlc}&interval={interval}", timeout=30)
+        r = session.get(
+            f"{KRAKEN_URL}/0/public/OHLC?pair={kraken_ohlc}&interval={interval}",
+            timeout=30
+        )
         data = r.json()
         if data.get("error") and data["error"]:
             if cache_key in last_rsi_cache:
@@ -298,14 +296,17 @@ def get_rsi(kraken_ohlc, symbol, interval):
     return None
 
 def calc_rsi(prices):
-    if len(prices) < 15: return None
-    recent = prices[-15:]
+    """Calculate RSI using global RSI_PERIOD."""
+    if len(prices) < RSI_PERIOD + 1:
+        return None
+    recent = prices[-(RSI_PERIOD+1):]
     gains = losses = 0
     for i in range(1, len(recent)):
         d = recent[i] - recent[i-1]
         if d > 0: gains += d
         else: losses += abs(d)
-    ag, al = gains/14, losses/14
+    ag = gains / RSI_PERIOD
+    al = losses / RSI_PERIOD
     if al == 0: return 100
     return round(100 - 100/(1 + ag/al), 2)
 
@@ -405,7 +406,7 @@ def detect_market_regime(kraken_ohlc, interval):
         log.error(f"Regime detection error: {e}")
         return 'ranging'
 
-# ═══ KRAKEN LIVE (unchanged) ═════════════════════════════════════════════════
+# ═══ KRAKEN LIVE ══════════════════════════════════════════════════════════════
 def kraken_sign(urlpath, data):
     postdata = urllib.parse.urlencode(data)
     encoded = (str(data['nonce']) + postdata).encode()
@@ -435,9 +436,12 @@ def kraken_place_order(pair, side, qty):
         "pair": pair, "type": side, "ordertype": "market", "volume": str(round(qty, 6))
     })
 
-# ═══ PAPER TRADING (modified to collect hourly trades) ═══════════════════════
+# ═══ PAPER TRADING ════════════════════════════════════════════════════════════
 def paper_buy_scalp(symbol, price):
     global scalp_balance
+    # Only allow BTC for scalp
+    if symbol != "BTC":
+        return None
     qty = round(STRATEGIES["SCALP"]["trade_size"] / price, 6)
     cost = qty * price
     if scalp_balance < cost:
@@ -445,20 +449,20 @@ def paper_buy_scalp(symbol, price):
         return None
     scalp_balance -= cost
     log.info(f"📄 ⚡ SCALP BUY {symbol} qty={qty} @ ${price:,.2f} | Scalp Balance: ${scalp_balance:,.2f}")
-    # No Telegram per trade
     return qty
 
 def paper_sell_scalp(symbol, price, qty, pnl=None):
     global scalp_balance, hourly_trades
+    if symbol != "BTC":
+        return
     scalp_balance += qty * price
     pnl_text = f" | PnL: ${pnl:+.2f}" if pnl is not None else ""
     log.info(f"📄 ⚡ SCALP SELL {symbol} qty={qty} @ ${price:,.2f}{pnl_text} | Scalp Balance: ${scalp_balance:,.2f}")
     if pnl is not None:
-        # Store for hourly summary and RSI adaptation
         trade_record = {
             'symbol': symbol,
             'pnl': pnl,
-            'rsi_buy_used': STRATEGIES["SCALP"]["rsi_buy"],  # the threshold used for this trade's entry
+            'rsi_buy_used': STRATEGIES["SCALP"]["rsi_buy"],
             'time': datetime.now(timezone.utc).isoformat()
         }
         hourly_trades.append(trade_record)
@@ -480,7 +484,6 @@ def paper_sell_trend(symbol, price, qty, pnl=None):
     trend_balance += qty * price
     pnl_text = f" | PnL: ${pnl:+.2f}" if pnl is not None else ""
     log.info(f"📄 📈 TREND SELL {symbol} qty={qty} @ ${price:,.2f}{pnl_text} | Trend Balance: ${trend_balance:,.2f}")
-    # Trend trades not used for RSI adaptation (optional)
 
 def get_balances():
     if TRADING_MODE == "live":
@@ -488,10 +491,13 @@ def get_balances():
         return total, total, total
     return scalp_balance, trend_balance, scalp_balance + trend_balance
 
-# ═══ EXIT CHECKS (unchanged) ═════════════════════════════════════════════════
+# ═══ EXIT CHECKS ═════════════════════════════════════════════════════════════
 def run_exits(strategy_name, cfg, positions, trades, stats, sell_func):
     for s in SYMBOLS:
         symbol = s["symbol"]
+        # For scalp, only process BTC
+        if strategy_name == "SCALP" and symbol != "BTC":
+            continue
         try:
             price = price_cache.get(symbol)
             if not price: continue
@@ -537,7 +543,7 @@ def run_exits(strategy_name, cfg, positions, trades, stats, sell_func):
         except Exception as e:
             log.error(f"[{strategy_name}] Exit error {symbol}: {e}")
 
-# ═══ ENTRY CHECKS (uses current_rsi_buy) ═════════════════════════════════════
+# ═══ ENTRY CHECKS ════════════════════════════════════════════════════════════
 def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
     total_positions = len(scalp_positions) + len(trend_positions)
     if total_positions >= MAX_POSITIONS:
@@ -545,6 +551,9 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
 
     for s in SYMBOLS:
         symbol = s["symbol"]
+        # For scalp, only process BTC
+        if strategy_name == "SCALP" and symbol != "BTC":
+            continue
         try:
             price = price_cache.get(symbol)
             if not price: continue
@@ -641,7 +650,7 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
         except Exception as e:
             log.error(f"[{strategy_name}] Entry error {symbol}: {e}")
 
-# ═══ SAVE/LOAD STATE (include dynamic RSI data) ═══════════════════════════════
+# ═══ SAVE/LOAD STATE ═════════════════════════════════════════════════════════
 def save_state():
     try:
         scalp_bal, trend_bal, total_bal = get_balances()
@@ -699,7 +708,6 @@ def load_state():
             trend_positions = trend.get("positions", {})
             trend_trades = trend.get("trades", [])
             trend_stats = trend.get("stats", {"pnl":0, "wins":0, "losses":0})
-            # Load dynamic RSI data
             rsi_performance = state.get("rsi_performance", rsi_performance)
             current_rsi_buy = state.get("current_rsi_buy", DEFAULT_RSI_BUY)
             STRATEGIES["SCALP"]["rsi_buy"] = current_rsi_buy
@@ -709,7 +717,7 @@ def load_state():
         log.error(f"load_state error: {e}")
     return False
 
-# ═══ BOT TICK (added hourly summary check) ═══════════════════════════════════
+# ═══ BOT TICK ════════════════════════════════════════════════════════════════
 def bot_tick():
     global rsi_cache, active_strategy
     rsi_cache = {}
@@ -731,7 +739,6 @@ def bot_tick():
         save_state()
         return
 
-    # Check for hourly summary
     check_hourly_summary()
 
     scalp_bal, trend_bal, total_bal = get_balances()
@@ -756,18 +763,18 @@ def bot_tick():
 
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    log.info(f"⚡📈 APEX BOT – PHASE 2 (DYNAMIC RSI + HOURLY SUMMARY)")
-    log.info(f"⚡ SCALP: RSI(1m) Buy<{current_rsi_buy} (dynamic) OR Bollinger | Sell>55 TP1% SL0.3% | Time exit 1h | Trend filter: {TREND_FILTER_ENABLED}")
+    log.info(f"⚡📈 APEX BOT – BTC SCALP ONLY, RSI 20/80, $50 TRADE SIZE")
+    log.info(f"⚡ SCALP: BTC only, RSI({RSI_PERIOD}) Buy<{current_rsi_buy} OR Bollinger | Sell>80 TP1% SL0.3% | Time exit 1h | Trend filter: {TREND_FILTER_ENABLED}")
     if REGIME_DETECTION_ENABLED:
         log.info(f"🧠 Market regime detection: ON")
     if DYNAMIC_RSI_ENABLED:
         log.info(f"📈 Dynamic RSI adaptation: ON (candidates: {RSI_CANDIDATES})")
     if VOLUME_FILTER_ENABLED:
         log.info(f"📊 Volume filter: ON")
-    log.info(f"📈 TREND: RSI(4h) Buy<45 Sell>75 TP5% SL4% $200")
+    log.info(f"📈 TREND: BTC/ETH, RSI(4h) Buy<45 Sell>75 TP5% SL4% $200")
     log.info(f"🎯 Daily profit target: ${DAILY_PROFIT_TARGET} | Daily loss limit: ${MAX_DAILY_LOSS} | Max positions: {MAX_POSITIONS}")
     log.info(f"📱 Telegram hourly summaries: ENABLED")
-    send_telegram(f"🚀 <b>APEX BOT STARTED – PHASE 2</b>\nDynamic RSI ON\nHourly summaries\nDaily target: ${DAILY_PROFIT_TARGET}")
+    send_telegram(f"🚀 <b>APEX BOT – BTC SCALP ONLY</b>\nRSI 20/80, $50 trades\nDynamic adaptation ON\nHourly summaries")
 
     if not load_state():
         log.info("No existing state found, starting fresh")
