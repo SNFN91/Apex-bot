@@ -13,10 +13,10 @@ KRAKEN_API_SECRET = os.environ.get("KRAKEN_API_SECRET", "")
 KRAKEN_URL        = "https://api.kraken.com"
 
 # ═══ SAFETY FEATURES ══════════════════════════════════════════════════════════
-MAX_DAILY_LOSS = 10.0                    # Stop after losing $10
-DAILY_PROFIT_TARGET = 50.0               # ⬅️ NEW: Stop after making $50
+MAX_DAILY_LOSS = 10.0
+DAILY_PROFIT_TARGET = 50.0
 daily_loss = 0.0
-daily_profit = 0.0                        # Track today's profit
+daily_profit = 0.0
 last_reset_day = None
 MAX_POSITIONS = 4
 
@@ -27,23 +27,23 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 # ═══ DUAL STRATEGY CONFIG – $50/DAY EDITION ═══════════════════════════════════
 STRATEGIES = {
     "SCALP": {
-        "rsi_interval": 1,        # 1-minute candles
-        "rsi_buy": 45,            # buy when RSI < 45
-        "rsi_sell": 55,           # ⬅️ LOWERED – sell at 55 (was 60)
-        "tp": 0.01,                # ⬅️ 1% take profit (was 2%)
-        "sl": 0.003,               # ⬅️ 0.3% stop loss (was 1%)
-        "trade_size": 100,         # $100 per trade
-        "max_hold_hours": 1,       # ⬅️ Time exit after 1 hour (was 4)
+        "rsi_interval": 1,
+        "rsi_buy": 45,
+        "rsi_sell": 55,
+        "tp": 0.01,
+        "sl": 0.003,
+        "trade_size": 100,
+        "max_hold_hours": 1,
         "label": "⚡ Scalping",
         "color": "#f0b90b"
     },
     "TREND": {
-        "rsi_interval": 240,      # 4-hour candles
-        "rsi_buy": 45,            # buy when RSI < 45
-        "rsi_sell": 75,           # sell when RSI > 75
-        "tp": 0.05,               # 5% take profit
-        "sl": 0.04,               # 4% stop loss
-        "trade_size": 200,        # $200 per trade (paper)
+        "rsi_interval": 240,
+        "rsi_buy": 45,
+        "rsi_sell": 75,
+        "tp": 0.05,
+        "sl": 0.04,
+        "trade_size": 200,
         "label": "📈 Daily Trend",
         "color": "#22c55e"
     }
@@ -74,7 +74,6 @@ active_strategy  = "SCALP"
 # Persistent storage path
 STATE_PATH = "/data/state.json"
 BACKUP_PATH = "/data/state_backup.json"
-
 if not os.path.exists("/data"):
     STATE_PATH = "/tmp/state.json"
     BACKUP_PATH = "/tmp/state_backup.json"
@@ -95,16 +94,12 @@ def send_telegram(message):
     except Exception as e:
         log.error(f"Telegram error: {e}")
 
-# ═══ SAFETY CHECKS – UPDATED WITH PROFIT TARGET ═══════════════════════════════
-def check_safety_limits():
+# ═══ SAFETY CHECKS (basic: only emergency & daily limits) ════════════════════
+def check_safety_limits_basic():
     global daily_loss, daily_profit, last_reset_day
-    
-    # Emergency kill switch
     if os.path.exists("/tmp/STOP_TRADING"):
         log.warning("🛑 Emergency stop file detected – trading paused")
         return False
-    
-    # Reset daily counters at midnight
     today = date.today().isoformat()
     if last_reset_day != today:
         daily_loss = 0.0
@@ -112,28 +107,40 @@ def check_safety_limits():
         last_reset_day = today
         log.info(f"📅 Daily counters reset – Loss: ${daily_loss:.2f} | Profit target: ${DAILY_PROFIT_TARGET}")
         send_telegram(f"📅 <b>New trading day</b>\nProfit target: ${DAILY_PROFIT_TARGET}\nLoss limit: ${MAX_DAILY_LOSS}")
-    
-    # ⬅️ NEW: Check if daily profit target reached
     total_pnl = scalp_stats["pnl"] + trend_stats["pnl"]
     if total_pnl >= DAILY_PROFIT_TARGET:
         log.info(f"🎯 Daily profit target reached! ${total_pnl:.2f} >= ${DAILY_PROFIT_TARGET} – stopping trades")
         send_telegram(f"🎯 <b>Daily profit target reached!</b>\nProfit: ${total_pnl:.2f}\nTrading paused until midnight")
         return False
-    
-    # Daily loss limit
     total_today_loss = abs(min(0, total_pnl - (scalp_stats.get("pnl_yesterday", 0) + trend_stats.get("pnl_yesterday", 0))))
     if total_today_loss > MAX_DAILY_LOSS:
         log.warning(f"🛑 Daily loss limit reached (${total_today_loss:.2f} > ${MAX_DAILY_LOSS}) – stopping trades")
         send_telegram(f"⚠️ <b>Daily loss limit reached</b>\nLoss: ${total_today_loss:.2f}\nTrading paused until midnight")
         return False
-    
-    # Max positions cap
-    total_positions = len(scalp_positions) + len(trend_positions)
-    if total_positions >= MAX_POSITIONS:
-        log.info(f"⏳ Max positions reached ({total_positions}/{MAX_POSITIONS}) – waiting for exits")
-        return False
-    
     return True
+
+# ═══ MANUAL CLOSE FUNCTION ═══════════════════════════════════════════════════
+def close_all_positions():
+    """Close all open positions (paper mode only)"""
+    if TRADING_MODE != "paper":
+        log.warning("Manual close attempted in live mode – ignored")
+        return
+    log.info("🛑 Manual close initiated")
+    # Close scalp positions
+    for symbol, pos in list(scalp_positions.items()):
+        price = price_cache.get(symbol, pos["entry"])
+        pnl = pos["qty"] * (price - pos["entry"])
+        paper_sell_scalp(symbol, price, pos["qty"], pnl)
+        del scalp_positions[symbol]
+    # Close trend positions
+    for symbol, pos in list(trend_positions.items()):
+        price = price_cache.get(symbol, pos["entry"])
+        pnl = pos["qty"] * (price - pos["entry"])
+        paper_sell_trend(symbol, price, pos["qty"], pnl)
+        del trend_positions[symbol]
+    save_state()
+    log.info("✅ All positions closed manually")
+    send_telegram("🛑 <b>Manual close executed</b>\nAll positions closed.")
 
 # ═══ PRICES & INDICATORS ═════════════════════════════════════════════════════
 def fetch_all_prices():
@@ -298,106 +305,118 @@ def get_balances():
         return total, total, total
     return scalp_balance, trend_balance, scalp_balance + trend_balance
 
-# ═══ STRATEGY TICK – UPDATED ═════════════════════════════════════════════════
-def run_strategy(strategy_name, cfg, positions, trades, stats, buy_func, sell_func):
+# ═══ EXIT CHECKS (always run) ═════════════════════════════════════════════════
+def run_exits(strategy_name, cfg, positions, trades, stats, sell_func):
     for s in SYMBOLS:
         symbol = s["symbol"]
         try:
             price = price_cache.get(symbol)
             if not price: continue
+            pos = positions.get(symbol)
+            if not pos: continue
 
             rsi = get_rsi(s["kraken_ohlc"], symbol, cfg["rsi_interval"])
-            log.info(f"[{strategy_name}] {symbol} = ${price:,.2f} | RSI({cfg['rsi_interval']}m) = {rsi}")
-            pos = positions.get(symbol)
+            pct = (price - pos["entry"]) / pos["entry"]
+            reason = None
 
-            # ── EXIT ──────────────────────────────────────────────────────
-            if pos:
-                pct = (price - pos["entry"]) / pos["entry"]
-                reason = None
-                if pct >= cfg["tp"]:
-                    reason = f"Take Profit +{pct*100:.2f}%"
-                elif pct <= -cfg["sl"]:
-                    reason = f"Stop Loss {pct*100:.2f}%"
-                elif rsi is not None and rsi > cfg["rsi_sell"]:
-                    reason = f"RSI Exit {rsi}"
+            if pct >= cfg["tp"]:
+                reason = f"Take Profit +{pct*100:.2f}%"
+            elif pct <= -cfg["sl"]:
+                reason = f"Stop Loss {pct*100:.2f}%"
+            elif rsi is not None and rsi > cfg["rsi_sell"]:
+                reason = f"RSI Exit {rsi}"
 
-                # Time-based exit (1 hour)
-                if strategy_name == "SCALP" and "max_hold_hours" in cfg:
-                    hold_time = datetime.now(timezone.utc) - datetime.fromisoformat(pos["time"])
-                    if hold_time.total_seconds() > cfg["max_hold_hours"] * 3600:
-                        reason = f"Time exit ({int(hold_time.total_seconds()/3600)}h)"
+            # Time-based exit
+            if strategy_name == "SCALP" and "max_hold_hours" in cfg:
+                hold_time = datetime.now(timezone.utc) - datetime.fromisoformat(pos["time"])
+                if hold_time.total_seconds() > cfg["max_hold_hours"] * 3600:
+                    reason = f"Time exit ({int(hold_time.total_seconds()/3600)}h)"
 
-                if reason:
-                    is_win = pct >= 0
-                    if TRADING_MODE == "live":
-                        kraken_place_order(s["kraken_order"], "sell", pos["qty"])
-                    else:
-                        pnl = pos["qty"] * (price - pos["entry"])
-                        sell_func(symbol, price, pos["qty"], pnl)
+            if reason:
+                is_win = pct >= 0
+                if TRADING_MODE == "live":
+                    kraken_place_order(s["kraken_order"], "sell", pos["qty"])
+                else:
                     pnl = pos["qty"] * (price - pos["entry"])
-                    stats["pnl"] += pnl
-                    if is_win: stats["wins"] += 1
-                    else: stats["losses"] += 1
-                    trades.append({
-                        "symbol": f"{symbol}/USD", "side": "SELL",
-                        "price": price, "qty": pos["qty"],
-                        "pnl": round(pnl, 4), "reason": reason,
-                        "strategy": strategy_name,
-                        "time": datetime.now(timezone.utc).isoformat()
-                    })
-                    del positions[symbol]
-                    log.info(f"{'✅' if is_win else '🛑'} [{strategy_name}] SELL {symbol} | {reason} | PnL={pnl:+.4f}")
-
-            # ── ENTRY ─────────────────────────────────────────────────────
-            if symbol not in positions:
-                entry_signal = False
-                signal_reason = ""
-                
-                # Signal 1: RSI
-                if rsi is not None and rsi < cfg["rsi_buy"]:
-                    entry_signal = True
-                    signal_reason = f"RSI {rsi} < {cfg['rsi_buy']}"
-                
-                # Signal 2: Bollinger (scalp only)
-                if strategy_name == "SCALP":
-                    try:
-                        r = session.get(
-                            f"{KRAKEN_URL}/0/public/OHLC?pair={s['kraken_ohlc']}&interval={cfg['rsi_interval']}",
-                            timeout=30
-                        )
-                        data = r.json()
-                        if not data.get("error") and data["result"]:
-                            result = data["result"]
-                            key = [k for k in result.keys() if k != "last"][0]
-                            closes = [float(c[4]) for c in result[key][-50:]]
-                            if is_lower_band_touch(price, closes):
-                                entry_signal = True
-                                signal_reason = f"Bollinger touch ${price:,.2f}"
-                    except Exception as e:
-                        log.error(f"Bollinger error {symbol}: {e}")
-                
-                if entry_signal:
-                    log.info(f"🎯 [{strategy_name}] BUY SIGNAL {symbol} | {signal_reason}")
-                    if TRADING_MODE == "live":
-                        qty = round(cfg["trade_size"] / price, 6)
-                        kraken_place_order(s["kraken_order"], "buy", qty)
-                    else:
-                        qty = buy_func(symbol, price)
-                        if qty is None: continue
-                    positions[symbol] = {"entry": price, "qty": qty, "time": datetime.now(timezone.utc).isoformat()}
-                    trades.append({
-                        "symbol": f"{symbol}/USD", "side": "BUY",
-                        "price": price, "qty": qty, "pnl": None,
-                        "reason": signal_reason,
-                        "strategy": strategy_name,
-                        "time": datetime.now(timezone.utc).isoformat()
-                    })
-                    log.info(f"📈 [{strategy_name}] BUY {symbol} @ ${price:,.2f}")
-                elif symbol not in positions:
-                    log.info(f"⏳ [{strategy_name}] {symbol} RSI={rsi} — waiting for signal")
+                    sell_func(symbol, price, pos["qty"], pnl)
+                stats["pnl"] += pnl
+                if is_win: stats["wins"] += 1
+                else: stats["losses"] += 1
+                trades.append({
+                    "symbol": f"{symbol}/USD", "side": "SELL",
+                    "price": price, "qty": pos["qty"],
+                    "pnl": round(pnl, 4), "reason": reason,
+                    "strategy": strategy_name,
+                    "time": datetime.now(timezone.utc).isoformat()
+                })
+                del positions[symbol]
+                log.info(f"{'✅' if is_win else '🛑'} [{strategy_name}] SELL {symbol} | {reason} | PnL={pnl:+.4f}")
 
         except Exception as e:
-            log.error(f"[{strategy_name}] Tick error {symbol}: {e}")
+            log.error(f"[{strategy_name}] Exit error {symbol}: {e}")
+
+# ═══ ENTRY CHECKS (only if under max positions) ═══════════════════════════════
+def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
+    total_positions = len(scalp_positions) + len(trend_positions)
+    if total_positions >= MAX_POSITIONS:
+        return
+
+    for s in SYMBOLS:
+        symbol = s["symbol"]
+        try:
+            price = price_cache.get(symbol)
+            if not price: continue
+            if symbol in positions:
+                continue
+
+            rsi = get_rsi(s["kraken_ohlc"], symbol, cfg["rsi_interval"])
+            entry_signal = False
+            signal_reason = ""
+
+            if rsi is not None and rsi < cfg["rsi_buy"]:
+                entry_signal = True
+                signal_reason = f"RSI {rsi} < {cfg['rsi_buy']}"
+
+            if strategy_name == "SCALP" and not entry_signal:
+                try:
+                    r = session.get(
+                        f"{KRAKEN_URL}/0/public/OHLC?pair={s['kraken_ohlc']}&interval={cfg['rsi_interval']}",
+                        timeout=30
+                    )
+                    data = r.json()
+                    if not data.get("error") and data["result"]:
+                        result = data["result"]
+                        key = [k for k in result.keys() if k != "last"][0]
+                        closes = [float(c[4]) for c in result[key][-50:]]
+                        if is_lower_band_touch(price, closes):
+                            entry_signal = True
+                            signal_reason = f"Bollinger touch ${price:,.2f}"
+                except Exception as e:
+                    log.error(f"Bollinger error {symbol}: {e}")
+
+            if entry_signal:
+                log.info(f"🎯 [{strategy_name}] BUY SIGNAL {symbol} | {signal_reason}")
+                if TRADING_MODE == "live":
+                    qty = round(cfg["trade_size"] / price, 6)
+                    kraken_place_order(s["kraken_order"], "buy", qty)
+                else:
+                    qty = buy_func(symbol, price)
+                    if qty is None: continue
+                positions[symbol] = {"entry": price, "qty": qty, "time": datetime.now(timezone.utc).isoformat()}
+                trades.append({
+                    "symbol": f"{symbol}/USD", "side": "BUY",
+                    "price": price, "qty": qty, "pnl": None,
+                    "reason": signal_reason,
+                    "strategy": strategy_name,
+                    "time": datetime.now(timezone.utc).isoformat()
+                })
+                log.info(f"📈 [{strategy_name}] BUY {symbol} @ ${price:,.2f}")
+                break  # one buy per tick
+            else:
+                log.info(f"⏳ [{strategy_name}] {symbol} RSI={rsi} — waiting for signal")
+
+        except Exception as e:
+            log.error(f"[{strategy_name}] Entry error {symbol}: {e}")
 
 # ═══ SAVE/LOAD STATE ═════════════════════════════════════════════════════════
 def save_state():
@@ -460,7 +479,7 @@ def load_state():
         log.error(f"load_state error: {e}")
     return False
 
-# ═══ BOT TICK ════════════════════════════════════════════════════════════════
+# ═══ BOT TICK – FIXED + MANUAL CLOSE CHECK ═══════════════════════════════════
 def bot_tick():
     global rsi_cache, active_strategy
     rsi_cache = {}
@@ -470,7 +489,17 @@ def bot_tick():
                 active_strategy = f.read().strip()
     except: pass
 
-    if not check_safety_limits():
+    # Check for manual close signal
+    if os.path.exists("/tmp/CLOSE_ALL"):
+        log.info("🛑 Manual close signal detected")
+        if TRADING_MODE == "paper":
+            close_all_positions()
+        else:
+            log.warning("Manual close signal ignored in live mode")
+        os.remove("/tmp/CLOSE_ALL")
+
+    # Basic safety checks (no max positions check)
+    if not check_safety_limits_basic():
         save_state()
         return
 
@@ -482,14 +511,23 @@ def bot_tick():
         log.error("No prices available")
         return
 
-    run_strategy("SCALP", STRATEGIES["SCALP"], scalp_positions, scalp_trades, scalp_stats, paper_buy_scalp, paper_sell_scalp)
-    run_strategy("TREND", STRATEGIES["TREND"], trend_positions, trend_trades, trend_stats, paper_buy_trend, paper_sell_trend)
+    # ALWAYS run exits
+    run_exits("SCALP", STRATEGIES["SCALP"], scalp_positions, scalp_trades, scalp_stats, paper_sell_scalp)
+    run_exits("TREND", STRATEGIES["TREND"], trend_positions, trend_trades, trend_stats, paper_sell_trend)
+
+    # Only run entries if under max positions
+    total_positions = len(scalp_positions) + len(trend_positions)
+    if total_positions < MAX_POSITIONS:
+        run_entries("SCALP", STRATEGIES["SCALP"], scalp_positions, scalp_trades, scalp_stats, paper_buy_scalp)
+        run_entries("TREND", STRATEGIES["TREND"], trend_positions, trend_trades, trend_stats, paper_buy_trend)
+    else:
+        log.info(f"⏳ Max positions reached ({total_positions}/{MAX_POSITIONS}) – waiting for exits (entries blocked)")
 
     save_state()
 
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    log.info(f"⚡📈 APEX BOT – $50/DAY EDITION")
+    log.info(f"⚡📈 APEX BOT – $50/DAY EDITION (with manual close)")
     log.info(f"⚡ SCALP: RSI(1m) Buy<45 OR Bollinger | Sell>55 TP1% SL0.3% | Time exit 1h")
     log.info(f"📈 TREND: RSI(4h) Buy<45 Sell>75 TP5% SL4% $200")
     log.info(f"🎯 Daily profit target: ${DAILY_PROFIT_TARGET} | Daily loss limit: ${MAX_DAILY_LOSS} | Max positions: {MAX_POSITIONS}")
