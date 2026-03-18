@@ -5,6 +5,7 @@ from urllib3.util.retry import Retry
 import numpy as np
 from collections import deque
 import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 log = logging.getLogger(__name__)
@@ -85,7 +86,6 @@ STRATEGIES = {
 }
 
 # ═══ SYMBOLS – Scalp only BTC, Trend both ════════════════════════════════════
-# For scalp, we'll filter in the entry/exit loops; we keep both in SYMBOLS but handle per strategy.
 SYMBOLS = [
     {"symbol": "BTC", "kraken_ticker": "XXBTZUSD", "kraken_ohlc": "XBTUSD",  "kraken_order": "XXBTZUSD"},
     {"symbol": "ETH", "kraken_ticker": "XETHZUSD", "kraken_ohlc": "ETHUSD",  "kraken_order": "XETHZUSD"},
@@ -117,6 +117,72 @@ if not os.path.exists("/data"):
 session = requests.Session()
 retries = Retry(total=5, backoff_factor=2, status_forcelist=[502, 503, 504])
 session.mount('https://', HTTPAdapter(max_retries=retries))
+
+# ═══ SIMPLE HTTP SERVER FOR COMMANDS ═════════════════════════════════════════
+class CommandHandler(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    
+    def do_GET(self):
+        if self.path == "/reset_paper":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Reset command received")
+            # Create flag file for reset
+            with open("/tmp/RESET_PAPER", "w") as f:
+                f.write("1")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+def start_command_server():
+    server = HTTPServer(('0.0.0.0', 8081), CommandHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    log.info("🛠️ Command server running on port 8081")
+
+# ═══ RESET FUNCTION ══════════════════════════════════════════════════════════
+def reset_paper_account():
+    """Reset paper trading account to fresh state."""
+    global scalp_balance, trend_balance, scalp_positions, trend_positions
+    global scalp_trades, trend_trades, scalp_stats, trend_stats
+    global rsi_performance, current_rsi_buy, rsi_adapt_counter
+    global hourly_trades, daily_loss, daily_profit
+    
+    if TRADING_MODE != "paper":
+        log.warning("Reset attempted in live mode – ignored")
+        return
+    
+    log.info("🔄 Resetting paper account to fresh state")
+    
+    # Reset balances
+    scalp_balance = 10000.0
+    trend_balance = 10000.0
+    
+    # Clear all positions
+    scalp_positions = {}
+    trend_positions = {}
+    
+    # Clear trade history
+    scalp_trades = []
+    trend_trades = []
+    hourly_trades = []
+    
+    # Reset stats
+    scalp_stats = {"pnl": 0.0, "wins": 0, "losses": 0}
+    trend_stats = {"pnl": 0.0, "wins": 0, "losses": 0}
+    
+    # Reset daily counters
+    daily_loss = 0.0
+    daily_profit = 0.0
+    
+    # Reset RSI learning
+    current_rsi_buy = DEFAULT_RSI_BUY
+    STRATEGIES["SCALP"]["rsi_buy"] = current_rsi_buy
+    rsi_adapt_counter = 0
+    rsi_performance = {val: {'wins': 0, 'losses': 0, 'total_pnl': 0.0, 'trades': []} for val in RSI_CANDIDATES}
+    
+    save_state()
+    log.info("✅ Paper account reset complete")
+    send_telegram("🔄 <b>Paper account reset</b>\nFresh start with $10,000")
 
 # ═══ TELEGRAM ════════════════════════════════════════════════════════════════
 def send_telegram(message):
@@ -221,8 +287,9 @@ def check_safety_limits_basic():
     return True
 
 def close_all_positions():
-        # 🔴 TEMPORARY OVERRIDE – REMOVE AFTER POSITIONS ARE CLOSED
-    log.info("🛑 Manual close initiated (OVERRIDE ACTIVE – will close regardless of mode)")
+    if TRADING_MODE != "paper":
+        log.warning("Manual close attempted in live mode – ignored")
+        return
     log.info("🛑 Manual close initiated")
     for symbol, pos in list(scalp_positions.items()):
         price = price_cache.get(symbol, pos["entry"])
@@ -720,6 +787,12 @@ def load_state():
 def bot_tick():
     global rsi_cache, active_strategy
     rsi_cache = {}
+    
+    # Check for reset flag
+    if os.path.exists("/tmp/RESET_PAPER"):
+        reset_paper_account()
+        os.remove("/tmp/RESET_PAPER")
+    
     try:
         if os.path.exists("/tmp/active_strategy.txt"):
             with open("/tmp/active_strategy.txt") as f:
@@ -773,7 +846,11 @@ if __name__ == "__main__":
     log.info(f"📈 TREND: BTC/ETH, RSI(4h) Buy<45 Sell>75 TP5% SL4% $200")
     log.info(f"🎯 Daily profit target: ${DAILY_PROFIT_TARGET} | Daily loss limit: ${MAX_DAILY_LOSS} | Max positions: {MAX_POSITIONS}")
     log.info(f"📱 Telegram hourly summaries: ENABLED")
+    log.info(f"🔄 Reset endpoint: http://your-bot:8081/reset_paper")
     send_telegram(f"🚀 <b>APEX BOT – BTC SCALP ONLY</b>\nRSI 20/80, $50 trades\nDynamic adaptation ON\nHourly summaries")
+
+    # Start command server
+    start_command_server()
 
     if not load_state():
         log.info("No existing state found, starting fresh")
