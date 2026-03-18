@@ -221,9 +221,8 @@ def check_safety_limits_basic():
     return True
 
 def close_all_positions():
-    if TRADING_MODE != "paper":
-        log.warning("Manual close attempted in live mode – ignored")
-        return
+        # 🔴 TEMPORARY OVERRIDE – REMOVE AFTER POSITIONS ARE CLOSED
+    log.info("🛑 Manual close initiated (OVERRIDE ACTIVE – will close regardless of mode)")
     log.info("🛑 Manual close initiated")
     for symbol, pos in list(scalp_positions.items()):
         price = price_cache.get(symbol, pos["entry"])
