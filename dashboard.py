@@ -128,10 +128,10 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
   </a>
 </div>
 
-<!-- MANUAL CLOSE BUTTON (PAPER MODE ONLY) -->
+<!-- MANUAL CLOSE BUTTON (REMOVED MODE CHECK) -->
 <div class="close-btn-container">
   <button onclick="closeAllPositions()" class="close-btn">
-    🛑 CLOSE ALL POSITIONS (Paper Mode Only)
+    🛑 CLOSE ALL POSITIONS
   </button>
 </div>
 
@@ -200,7 +200,7 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
 
 <script>
 function closeAllPositions() {
-  if (!confirm('⚠️ This will close ALL open positions in PAPER mode. Continue?')) return;
+  if (!confirm('⚠️ This will close ALL open positions. Continue?')) return;
   
   const btn = document.querySelector('.close-btn');
   const originalText = btn.innerText;
@@ -396,23 +396,18 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        # Manual close endpoint
+        # Manual close endpoint - FIXED: Removed mode check
         if parsed.path == "/close_all":
-            if TRADING_MODE == "paper":
-                try:
-                    with open("/tmp/CLOSE_ALL", "w") as f:
-                        f.write("1")
-                    self.send_response(200)
-                    self.end_headers()
-                    self.wfile.write(b"Close signal sent")
-                except Exception as e:
-                    self.send_response(500)
-                    self.end_headers()
-                    self.wfile.write(str(e).encode())
-            else:
-                self.send_response(403)
+            try:
+                with open("/tmp/CLOSE_ALL", "w") as f:
+                    f.write("1")
+                self.send_response(200)
                 self.end_headers()
-                self.wfile.write(b"Manual close only available in paper mode")
+                self.wfile.write(b"Close signal sent")
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(str(e).encode())
             return
 
         # Serve dashboard
