@@ -7,7 +7,7 @@ STATE_FILE = "/data/state.json"  # Use persistent storage
 active_strategy = "SCALP"  # Default view
 TRADING_MODE = os.environ.get("TRADING_MODE", "paper")  # Read mode
 
-# HTML Template with Manual Close Button
+# HTML Template with Manual Close Button and Reset Scalp Stats Button
 HTML = """<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8"/>
@@ -17,7 +17,7 @@ HTML = """<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Clash+Display:wght@600;700&display=swap" rel="stylesheet"/>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#070b12;--surface:#0d1421;--border:#1a2535;--gold:#f0b90b;--green:#22c55e;--red:#ef4444;--text:#e2e8f0;--muted:#4b5563;--dim:#1e2d45;}
+:root{--bg:#070b12;--surface:#0d1421;--border:#1a2535;--gold:#f0b90b;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--text:#e2e8f0;--muted:#4b5563;--dim:#1e2d45;}
 body{background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;min-height:100vh}
 ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:var(--dim)}
 
@@ -43,10 +43,12 @@ body{background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;min-
 .btn-desc{font-size:10px;color:var(--muted);margin-top:3px}
 .btn-active-badge{display:inline-block;margin-top:6px;font-size:9px;padding:2px 8px;border-radius:4px;letter-spacing:.1em}
 
-/* Manual Close Button */
-.close-btn-container{margin:10px 24px;text-align:center}
-.close-btn{background:#ef4444;color:white;border:none;padding:12px 24px;border-radius:8px;font-size:14px;cursor:pointer;font-family:'DM Mono',monospace;font-weight:bold;transition:all .2s;border:1px solid #ef4444}
+/* Button Container */
+.button-container{display:flex;gap:10px;margin:10px 24px;justify-content:center}
+.close-btn{background:#ef4444;color:white;border:none;padding:12px 24px;border-radius:8px;font-size:14px;cursor:pointer;font-family:'DM Mono',monospace;font-weight:bold;transition:all .2s;border:1px solid #ef4444;flex:1;max-width:250px}
 .close-btn:hover{background:#dc2626;transform:translateY(-2px);box-shadow:0 0 15px rgba(239,68,68,0.3)}
+.reset-stats-btn{background:#3b82f6;color:white;border:none;padding:12px 24px;border-radius:8px;font-size:14px;cursor:pointer;font-family:'DM Mono',monospace;font-weight:bold;transition:all .2s;border:1px solid #3b82f6;flex:1;max-width:250px}
+.reset-stats-btn:hover{background:#2563eb;transform:translateY(-2px);box-shadow:0 0 15px rgba(59,130,246,0.3)}
 
 .body{padding:0 24px 24px;max-width:1200px;margin:0 auto}
 
@@ -117,21 +119,24 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
   <a href="/set_strategy?mode=SCALP" class="strat-btn __SCALP_ACTIVE__">
     <div class="btn-icon">⚡</div>
     <div class="btn-label" style="color:#f0b90b">SCALPING</div>
-    <div class="btn-desc">1min RSI • $100 • TP1% SL0.3%</div>
+    <div class="btn-desc">1min RSI • $50 • TP1% SL0.3% • Time exit 1h • $50/trade</div>
     __SCALP_BADGE__
   </a>
   <a href="/set_strategy?mode=TREND" class="strat-btn __TREND_ACTIVE__">
     <div class="btn-icon">📈</div>
     <div class="btn-label" style="color:#22c55e">DAILY TREND</div>
-    <div class="btn-desc">4h RSI • $200 • TP5% SL4%</div>
+    <div class="btn-desc">4h RSI • $200 • TP5% SL4% • $200/trade</div>
     __TREND_BADGE__
   </a>
 </div>
 
-<!-- MANUAL CLOSE BUTTON (REMOVED MODE CHECK) -->
-<div class="close-btn-container">
+<!-- BUTTON CONTAINER WITH TWO BUTTONS -->
+<div class="button-container">
   <button onclick="closeAllPositions()" class="close-btn">
     🛑 CLOSE ALL POSITIONS
+  </button>
+  <button onclick="resetScalpStats()" class="reset-stats-btn">
+    🔄 RESET SCALP STATS
   </button>
 </div>
 
@@ -191,7 +196,7 @@ td{padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.03)}
   </div>
 
   <div class="footer">
-    <span>⚡ Scalp: RSI(1m) Buy<45 Sell>55 TP1% SL0.3% $100 | Time exit 1h</span>
+    <span>⚡ Scalp: RSI(1m) Buy<45 Sell>55 TP1% SL0.3% $50 | Time exit 1h</span>
     <span>📈 Trend: RSI(4h) Buy<45 Sell>75 TP5% SL4% $200</span>
     <span style="color:__ACTIVE_COLOR__">Active: __ACTIVE_STRATEGY__</span>
   </div>
@@ -211,6 +216,34 @@ function closeAllPositions() {
     .then(response => {
       if (response.ok) {
         alert('✅ Close signal sent. Positions will be closed within 30 seconds.');
+        setTimeout(() => location.reload(), 2000);
+      } else {
+        response.text().then(text => {
+          alert('❌ Error: ' + text);
+          btn.innerText = originalText;
+          btn.disabled = false;
+        });
+      }
+    })
+    .catch(err => {
+      alert('❌ Fetch error: ' + err);
+      btn.innerText = originalText;
+      btn.disabled = false;
+    });
+}
+
+function resetScalpStats() {
+  if (!confirm('⚠️ This will reset scalp trading stats (wins/losses/P&L). Continue?')) return;
+  
+  const btn = document.querySelector('.reset-stats-btn');
+  const originalText = btn.innerText;
+  btn.innerText = '⏳ Resetting...';
+  btn.disabled = true;
+  
+  fetch('/reset_scalp_stats')
+    .then(response => {
+      if (response.ok) {
+        alert('✅ Reset scalp stats signal sent. Stats will reset within 30 seconds.');
         setTimeout(() => location.reload(), 2000);
       } else {
         response.text().then(text => {
@@ -269,7 +302,7 @@ def render(state, view_mode):
         color = "#f0b90b"
         tp = 0.01
         sl = 0.003
-        desc = "1min RSI • Buy <45 • Sell >55 • TP 1% • SL 0.3% • Time exit 1h • $100/trade"
+        desc = "1min RSI • Buy <45 • Sell >55 • TP 1% • SL 0.3% • Time exit 1h • $50/trade"
         tag_text = "SCALP"
         tag_class = "tag-scalp"
     else:
@@ -396,7 +429,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        # Manual close endpoint - FIXED: Removed mode check
+        # Manual close endpoint
         if parsed.path == "/close_all":
             try:
                 with open("/tmp/CLOSE_ALL", "w") as f:
@@ -404,6 +437,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"Close signal sent")
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(str(e).encode())
+            return
+
+        # NEW: Reset scalp stats endpoint
+        if parsed.path == "/reset_scalp_stats":
+            try:
+                with open("/tmp/RESET_SCALP_STATS", "w") as f:
+                    f.write("1")
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"Reset scalp stats signal sent")
             except Exception as e:
                 self.send_response(500)
                 self.end_headers()
