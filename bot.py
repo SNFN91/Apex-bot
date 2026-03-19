@@ -106,6 +106,10 @@ rsi_cache        = {}
 last_rsi_cache   = {}
 active_strategy  = "SCALP"
 
+# ═══ COOLDOWN AFTER SCALP EXIT (NEW) ═════════════════════════════════════════
+SCALP_COOLDOWN_SECONDS = 300   # 5 minutes
+scalp_last_exit_time = {}       # symbol -> timestamp (UTC)
+
 # Persistent storage path
 STATE_PATH = "/data/state.json"
 BACKUP_PATH = "/data/state_backup.json"
@@ -145,7 +149,7 @@ def reset_paper_account():
     global scalp_balance, trend_balance, scalp_positions, trend_positions
     global scalp_trades, trend_trades, scalp_stats, trend_stats
     global rsi_performance, current_rsi_buy, rsi_adapt_counter
-    global hourly_trades, daily_loss, daily_profit
+    global hourly_trades, daily_loss, daily_profit, scalp_last_exit_time
     
     if TRADING_MODE != "paper":
         log.warning("Reset attempted in live mode – ignored")
@@ -179,6 +183,9 @@ def reset_paper_account():
     STRATEGIES["SCALP"]["rsi_buy"] = current_rsi_buy
     rsi_adapt_counter = 0
     rsi_performance = {val: {'wins': 0, 'losses': 0, 'total_pnl': 0.0, 'trades': []} for val in RSI_CANDIDATES}
+    
+    # Reset cooldown timers
+    scalp_last_exit_time = {}
     
     save_state()
     log.info("✅ Paper account reset complete")
@@ -286,7 +293,7 @@ def check_safety_limits_basic():
         return False
     return True
 
-# ═══ CLOSE ALL POSITIONS – FIXED VERSION ═════════════════════════════════════
+# ═══ CLOSE ALL POSITIONS ═════════════════════════════════════════════════════
 def close_all_positions():
     log.info("🛑 Manual close initiated")
     
@@ -521,7 +528,7 @@ def paper_buy_scalp(symbol, price):
     return qty
 
 def paper_sell_scalp(symbol, price, qty, pnl=None):
-    global scalp_balance, hourly_trades
+    global scalp_balance, hourly_trades, scalp_last_exit_time
     if symbol != "BTC":
         return
     scalp_balance += qty * price
@@ -536,6 +543,8 @@ def paper_sell_scalp(symbol, price, qty, pnl=None):
         }
         hourly_trades.append(trade_record)
         update_rsi_performance(trade_record)
+        # Record exit time for cooldown
+        scalp_last_exit_time[symbol] = time.time()
 
 def paper_buy_trend(symbol, price):
     global trend_balance
@@ -591,7 +600,7 @@ def run_exits(strategy_name, cfg, positions, trades, stats, sell_func):
 
             if reason:
                 is_win = pct >= 0
-                # FIXED: Calculate pnl before using it
+                # Calculate pnl before using it
                 pnl = pos["qty"] * (price - pos["entry"])
                 if TRADING_MODE == "live":
                     kraken_place_order(s["kraken_order"], "sell", pos["qty"])
@@ -630,6 +639,15 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
             if symbol in positions:
                 continue
 
+            # --- Cooldown check for scalp ---
+            if strategy_name == "SCALP":
+                last_exit = scalp_last_exit_time.get(symbol)
+                if last_exit is not None:
+                    seconds_since_exit = time.time() - last_exit
+                    if seconds_since_exit < SCALP_COOLDOWN_SECONDS:
+                        log.info(f"⏳ [{strategy_name}] {symbol} in cooldown ({seconds_since_exit:.0f}s < {SCALP_COOLDOWN_SECONDS}s) – skipping entry")
+                        continue
+
             regime = detect_market_regime(s["kraken_ohlc"], cfg["rsi_interval"])
             log.info(f"[{strategy_name}] {symbol} market regime: {regime}")
 
@@ -646,8 +664,8 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                 entry_signal = True
                 signal_reason = f"RSI {rsi} < {cfg['rsi_buy']}"
 
-            # Signal 2: Bollinger touch (scalp only)
-            if strategy_name == "SCALP" and not entry_signal:
+            # Signal 2: Bollinger touch (scalp only) – ENFORCE BTC ONLY
+            if strategy_name == "SCALP" and not entry_signal and symbol == "BTC":
                 try:
                     r = session.get(
                         f"{KRAKEN_URL}/0/public/OHLC?pair={s['kraken_ohlc']}&interval={cfg['rsi_interval']}",
@@ -746,12 +764,13 @@ def save_state():
             "daily_profit_target": DAILY_PROFIT_TARGET,
             "rsi_performance": rsi_performance,
             "current_rsi_buy": current_rsi_buy,
+            "scalp_last_exit_time": scalp_last_exit_time,
             "updated": datetime.now(timezone.utc).isoformat()
         }
         with open(STATE_PATH, "w") as f:
             json.dump(state, f)
         
-        # FIXED: Only create backups if /data directory exists
+        # Only create backups if /data directory exists
         if os.path.exists("/data"):
             import glob
             backup_name = f"/data/state_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -766,7 +785,7 @@ def save_state():
 def load_state():
     global scalp_balance, trend_balance, scalp_positions, trend_positions
     global scalp_trades, trend_trades, scalp_stats, trend_stats
-    global rsi_performance, current_rsi_buy
+    global rsi_performance, current_rsi_buy, scalp_last_exit_time
     try:
         if os.path.exists(STATE_PATH):
             with open(STATE_PATH) as f:
@@ -782,10 +801,12 @@ def load_state():
             trend_trades = trend.get("trades", [])
             trend_stats = trend.get("stats", {"pnl":0, "wins":0, "losses":0})
             rsi_performance = state.get("rsi_performance", rsi_performance)
-            # FIXED: Ensure loaded RSI value is always one of the candidates
+            # Ensure loaded RSI value is always one of the candidates
             loaded_rsi = state.get("current_rsi_buy", DEFAULT_RSI_BUY)
             current_rsi_buy = loaded_rsi if loaded_rsi in RSI_CANDIDATES else DEFAULT_RSI_BUY
             STRATEGIES["SCALP"]["rsi_buy"] = current_rsi_buy
+            # Load cooldown timers
+            scalp_last_exit_time = state.get("scalp_last_exit_time", {})
             log.info(f"✅ Loaded state: Scalp ${scalp_balance:,.2f} Trend ${trend_balance:,.2f} | RSI buy: {current_rsi_buy}")
             return True
     except Exception as e:
@@ -808,7 +829,7 @@ def bot_tick():
                 active_strategy = f.read().strip()
     except: pass
 
-    # FIXED: Manual close now works in all modes
+    # Manual close signal (now works in all modes)
     if os.path.exists("/tmp/CLOSE_ALL"):
         log.info("🛑 Manual close signal detected")
         close_all_positions()
