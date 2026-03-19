@@ -191,6 +191,21 @@ def reset_paper_account():
     log.info("✅ Paper account reset complete")
     send_telegram("🔄 <b>Paper account reset</b>\nFresh start with $10,000")
 
+# ═══ RESET SCALP STATS FUNCTION (NEW) ════════════════════════════════════════
+def reset_scalp_stats():
+    """Reset only scalp balance and stats. Preserve trades, positions, and RSI learning."""
+    global scalp_balance, scalp_stats
+    
+    log.info("🔄 Resetting scalp stats only")
+    
+    # Reset only these specific variables
+    scalp_balance = 10000.0
+    scalp_stats = {"pnl": 0.0, "wins": 0, "losses": 0}
+    
+    save_state()
+    log.info("✅ Scalp stats reset complete")
+    send_telegram("🔄 <b>Scalp stats reset</b>\nBalance: $10,000 | P&L: $0")
+
 # ═══ TELEGRAM ════════════════════════════════════════════════════════════════
 def send_telegram(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -822,6 +837,12 @@ def bot_tick():
     if os.path.exists("/tmp/RESET_PAPER"):
         reset_paper_account()
         os.remove("/tmp/RESET_PAPER")
+    
+    # Check for scalp stats reset flag (NEW)
+    if os.path.exists("/tmp/RESET_SCALP_STATS"):
+        log.info("🔄 Scalp stats reset signal detected")
+        reset_scalp_stats()
+        os.remove("/tmp/RESET_SCALP_STATS")
     
     try:
         if os.path.exists("/tmp/active_strategy.txt"):
