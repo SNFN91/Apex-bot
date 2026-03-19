@@ -286,13 +286,9 @@ def check_safety_limits_basic():
         return False
     return True
 
-# ═══ CLOSE ALL POSITIONS – ⚠️ TEMPORARY OVERRIDE ⚠️ ═══════════════════════════
+# ═══ CLOSE ALL POSITIONS – FIXED VERSION ═════════════════════════════════════
 def close_all_positions():
-    # 🔴 TEMPORARY OVERRIDE – REMOVE AFTER POSITIONS ARE CLOSED
-    # if TRADING_MODE != "paper":
-    #     log.warning("Manual close attempted in live mode – ignored")
-    #     return
-    log.info("🛑 Manual close initiated (OVERRIDE ACTIVE – will close regardless of mode)")
+    log.info("🛑 Manual close initiated")
     
     # Close all scalp positions
     for symbol, pos in list(scalp_positions.items()):
@@ -311,7 +307,6 @@ def close_all_positions():
     save_state()
     log.info("✅ All positions closed manually")
     send_telegram("🛑 <b>Manual close executed</b>\nAll positions closed.")
-# ═══════════════════════════════════════════════════════════════════════════
 
 # ═══ PRICES & INDICATORS ═════════════════════════════════════════════════════
 def fetch_all_prices():
@@ -596,10 +591,11 @@ def run_exits(strategy_name, cfg, positions, trades, stats, sell_func):
 
             if reason:
                 is_win = pct >= 0
+                # FIXED: Calculate pnl before using it
+                pnl = pos["qty"] * (price - pos["entry"])
                 if TRADING_MODE == "live":
                     kraken_place_order(s["kraken_order"], "sell", pos["qty"])
                 else:
-                    pnl = pos["qty"] * (price - pos["entry"])
                     sell_func(symbol, price, pos["qty"], pnl)
                 stats["pnl"] += pnl
                 if is_win: stats["wins"] += 1
@@ -754,13 +750,16 @@ def save_state():
         }
         with open(STATE_PATH, "w") as f:
             json.dump(state, f)
-        backup_name = f"/data/state_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        with open(backup_name, "w") as f:
-            json.dump(state, f)
-        import glob
-        backups = sorted(glob.glob("/data/state_*.json"))
-        for old in backups[:-50]:
-            os.remove(old)
+        
+        # FIXED: Only create backups if /data directory exists
+        if os.path.exists("/data"):
+            import glob
+            backup_name = f"/data/state_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            with open(backup_name, "w") as f:
+                json.dump(state, f)
+            backups = sorted(glob.glob("/data/state_*.json"))
+            for old in backups[:-50]:
+                os.remove(old)
     except Exception as e:
         log.error(f"save_state error: {e}")
 
@@ -783,7 +782,9 @@ def load_state():
             trend_trades = trend.get("trades", [])
             trend_stats = trend.get("stats", {"pnl":0, "wins":0, "losses":0})
             rsi_performance = state.get("rsi_performance", rsi_performance)
-            current_rsi_buy = state.get("current_rsi_buy", DEFAULT_RSI_BUY)
+            # FIXED: Ensure loaded RSI value is always one of the candidates
+            loaded_rsi = state.get("current_rsi_buy", DEFAULT_RSI_BUY)
+            current_rsi_buy = loaded_rsi if loaded_rsi in RSI_CANDIDATES else DEFAULT_RSI_BUY
             STRATEGIES["SCALP"]["rsi_buy"] = current_rsi_buy
             log.info(f"✅ Loaded state: Scalp ${scalp_balance:,.2f} Trend ${trend_balance:,.2f} | RSI buy: {current_rsi_buy}")
             return True
@@ -807,12 +808,10 @@ def bot_tick():
                 active_strategy = f.read().strip()
     except: pass
 
+    # FIXED: Manual close now works in all modes
     if os.path.exists("/tmp/CLOSE_ALL"):
         log.info("🛑 Manual close signal detected")
-        if TRADING_MODE == "paper":
-            close_all_positions()
-        else:
-            log.warning("Manual close signal ignored in live mode")
+        close_all_positions()
         os.remove("/tmp/CLOSE_ALL")
 
     if not check_safety_limits_basic():
