@@ -7,6 +7,16 @@ from collections import deque
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+# ML imports
+try:
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.preprocessing import StandardScaler
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    log = logging.getLogger(__name__)
+    log.warning("⚠️ scikit-learn not installed. ML predictor will be disabled.")
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 log = logging.getLogger(__name__)
 
@@ -55,6 +65,116 @@ rsi_performance = {val: {'wins': 0, 'losses': 0, 'total_pnl': 0.0, 'trades': []}
 current_rsi_buy = DEFAULT_RSI_BUY
 rsi_adapt_counter = 0
 RSI_ADAPT_FREQUENCY = 20
+
+# ═══ ML PREDICTOR (PHASE 3) ══════════════════════════════════════════════════
+ML_ENABLED = True
+ML_CONFIDENCE_THRESHOLD = 0.60
+ML_MIN_TRADES = 30
+ml_model = None
+ml_scaler = None
+ml_trained = False
+ml_last_training_trades = 0
+
+def regime_to_int(regime):
+    """Convert regime string to integer for ML."""
+    mapping = {
+        'ranging': 0,
+        'trending_up': 1,
+        'trending_down': 2,
+        'volatile': 3
+    }
+    return mapping.get(regime, 0)
+
+def prepare_ml_features(trade_data):
+    """Extract features from trade record."""
+    return [
+        trade_data.get('rsi_at_entry', 50),           # RSI value at entry
+        trade_data.get('bb_distance', 0),             # Distance from lower BB as %
+        trade_data.get('regime', 0),                  # Market regime (0-3)
+        trade_data.get('volume_ratio', 1.0)           # Volume ratio (current/avg)
+    ]
+
+def train_ml_model():
+    """Train Random Forest classifier on scalp trade history."""
+    global ml_model, ml_scaler, ml_trained, ml_last_training_trades
+    
+    if not SKLEARN_AVAILABLE:
+        log.warning("⚠️ scikit-learn not available. ML predictor disabled.")
+        return False
+    
+    # Collect all scalp trades with features AND pnl populated
+    trade_features = []
+    trade_labels = []
+    
+    for trade in scalp_trades:
+        if (trade.get('rsi_at_entry') is not None and 
+            trade.get('pnl') is not None and
+            trade.get('strategy') == "SCALP"):
+            features = prepare_ml_features(trade)
+            trade_features.append(features)
+            # WIN = pnl > 0 (profitable trade)
+            trade_labels.append(1 if trade['pnl'] > 0 else 0)
+    
+    if len(trade_features) < ML_MIN_TRADES:
+        log.info(f"📊 ML: Not enough trades ({len(trade_features)}/{ML_MIN_TRADES}) – waiting for more data")
+        return False
+    
+    # Train only if we have new trades since last training
+    if ml_trained and len(trade_features) == ml_last_training_trades:
+        return True
+    
+    try:
+        X = np.array(trade_features)
+        y = np.array(trade_labels)
+        
+        # Scale features
+        ml_scaler = StandardScaler()
+        X_scaled = ml_scaler.fit_transform(X)
+        
+        # Train Random Forest
+        ml_model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=5,
+            min_samples_split=5,
+            random_state=42,
+            n_jobs=-1
+        )
+        ml_model.fit(X_scaled, y)
+        
+        ml_trained = True
+        ml_last_training_trades = len(trade_features)
+        
+        # Log training results
+        accuracy = ml_model.score(X_scaled, y)
+        log.info(f"🤖 ML: Trained Random Forest on {len(trade_features)} trades | Accuracy: {accuracy:.2%}")
+        send_telegram(f"🤖 <b>ML Predictor Trained</b>\nTrades: {len(trade_features)}\nAccuracy: {accuracy:.2%}\nMin confidence: {ML_CONFIDENCE_THRESHOLD:.0%}")
+        
+        return True
+    except Exception as e:
+        log.error(f"ML training error: {e}")
+        return False
+
+def predict_trade_profit(rsi_value, bb_distance, regime_str, volume_ratio):
+    """Predict if trade will be profitable. Returns (confidence, should_trade)."""
+    if not ML_ENABLED or not SKLEARN_AVAILABLE or not ml_trained:
+        return 0.5, True  # Default: allow trade if ML not ready
+    
+    try:
+        regime_int = regime_to_int(regime_str)
+        features = [[rsi_value, bb_distance, regime_int, volume_ratio]]
+        
+        # Scale features
+        features_scaled = ml_scaler.transform(features)
+        
+        # Get probability of positive outcome
+        prob = ml_model.predict_proba(features_scaled)[0]
+        confidence = prob[1]  # Probability of class 1 (win)
+        
+        should_trade = confidence >= ML_CONFIDENCE_THRESHOLD
+        return confidence, should_trade
+    except Exception as e:
+        log.error(f"ML prediction error: {e}")
+        return 0.5, True  # Default to allow trade on error
 
 # ═══ HOURLY TELEGRAM SUMMARY (PHASE 2) ═══════════════════════════════════════
 last_hour_summary = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
@@ -106,7 +226,7 @@ rsi_cache        = {}
 last_rsi_cache   = {}
 active_strategy  = "SCALP"
 
-# ═══ COOLDOWN AFTER SCALP EXIT (NEW) ═════════════════════════════════════════
+# ═══ COOLDOWN AFTER SCALP EXIT ═══════════════════════════════════════════════
 SCALP_COOLDOWN_SECONDS = 300   # 5 minutes
 scalp_last_exit_time = {}       # symbol -> timestamp (UTC)
 
@@ -150,6 +270,7 @@ def reset_paper_account():
     global scalp_trades, trend_trades, scalp_stats, trend_stats
     global rsi_performance, current_rsi_buy, rsi_adapt_counter
     global hourly_trades, daily_loss, daily_profit, scalp_last_exit_time
+    global ml_model, ml_scaler, ml_trained, ml_last_training_trades
     
     if TRADING_MODE != "paper":
         log.warning("Reset attempted in live mode – ignored")
@@ -187,11 +308,17 @@ def reset_paper_account():
     # Reset cooldown timers
     scalp_last_exit_time = {}
     
+    # Reset ML model
+    ml_model = None
+    ml_scaler = None
+    ml_trained = False
+    ml_last_training_trades = 0
+    
     save_state()
     log.info("✅ Paper account reset complete")
     send_telegram("🔄 <b>Paper account reset</b>\nFresh start with $10,000")
 
-# ═══ RESET SCALP STATS FUNCTION (NEW) ════════════════════════════════════════
+# ═══ RESET SCALP STATS FUNCTION ══════════════════════════════════════════════
 def reset_scalp_stats():
     """Reset only scalp balance and stats. Preserve trades, positions, and RSI learning."""
     global scalp_balance, scalp_stats
@@ -227,13 +354,15 @@ def send_hourly_summary():
     losses = sum(1 for t in hourly_trades if t['pnl'] < 0)
     net_pnl = sum(t['pnl'] for t in hourly_trades)
     win_rate = (wins / total_trades * 100) if total_trades else 0
+    ml_status = "Active" if ml_trained else f"Training ({len(scalp_trades)}/{ML_MIN_TRADES})"
     message = (
         f"📊 <b>Hourly Summary</b>\n"
         f"Trades: {total_trades} | Wins: {wins} | Losses: {losses}\n"
         f"Net P&L: ${net_pnl:.2f}\n"
         f"Win Rate: {win_rate:.1f}%\n"
         f"Open positions: {len(scalp_positions) + len(trend_positions)}\n"
-        f"Current RSI buy: {current_rsi_buy}"
+        f"Current RSI buy: {current_rsi_buy}\n"
+        f"🤖 ML: {ml_status}"
     )
     send_telegram(message)
     hourly_trades = []
@@ -420,6 +549,29 @@ def is_lower_band_touch(price, prices, threshold_pct=0.01):
         return True
     return False
 
+def get_volume_ratio(kraken_ohlc, interval):
+    """Get current volume vs 20-period average volume."""
+    try:
+        r = session.get(
+            f"{KRAKEN_URL}/0/public/OHLC?pair={kraken_ohlc}&interval={interval}",
+            timeout=30
+        )
+        data = r.json()
+        if data.get("error") or not data["result"]:
+            return 1.0
+        result = data["result"]
+        key = [k for k in result.keys() if k != "last"][0]
+        candles = result[key]
+        if len(candles) < VOLUME_PERIOD + 1:
+            return 1.0
+        volumes = [float(c[6]) for c in candles[-VOLUME_PERIOD-1:]]
+        current_volume = volumes[-1]
+        avg_volume = sum(volumes[:-1]) / VOLUME_PERIOD
+        return current_volume / avg_volume if avg_volume > 0 else 1.0
+    except Exception as e:
+        log.error(f"Volume ratio error: {e}")
+        return 1.0
+
 def volume_spike_detected(kraken_ohlc, interval):
     try:
         r = session.get(
@@ -560,6 +712,9 @@ def paper_sell_scalp(symbol, price, qty, pnl=None):
         update_rsi_performance(trade_record)
         # Record exit time for cooldown
         scalp_last_exit_time[symbol] = time.time()
+        
+        # Retrain ML model after new trade
+        train_ml_model()
 
 def paper_buy_trend(symbol, price):
     global trend_balance
@@ -631,6 +786,16 @@ def run_exits(strategy_name, cfg, positions, trades, stats, sell_func):
                     "strategy": strategy_name,
                     "time": datetime.now(timezone.utc).isoformat()
                 })
+                
+                # FIX: Update the matching entry trade with pnl for ML training
+                if strategy_name == "SCALP":
+                    for t in trades:
+                        if (t['symbol'] == f"{symbol}/USD" and 
+                            t['pnl'] is None and 
+                            t.get('rsi_at_entry') is not None):
+                            t['pnl'] = round(pnl, 4)
+                            break
+                
                 del positions[symbol]
                 log.info(f"{'✅' if is_win else '🛑'} [{strategy_name}] SELL {symbol} | {reason} | PnL={pnl:+.4f}")
 
@@ -673,11 +838,18 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
             rsi = get_rsi(s["kraken_ohlc"], symbol, cfg["rsi_interval"])
             entry_signal = False
             signal_reason = ""
+            
+            # Store ML features if entry signal detected
+            ml_rsi = None
+            ml_bb_distance = None
+            ml_regime = regime
+            ml_volume_ratio = None
 
             # Signal 1: RSI – uses current_rsi_buy (dynamic)
             if rsi is not None and rsi < cfg["rsi_buy"]:
                 entry_signal = True
                 signal_reason = f"RSI {rsi} < {cfg['rsi_buy']}"
+                ml_rsi = rsi
 
             # Signal 2: Bollinger touch (scalp only) – ENFORCE BTC ONLY
             if strategy_name == "SCALP" and not entry_signal and symbol == "BTC":
@@ -691,11 +863,51 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                         result = data["result"]
                         key = [k for k in result.keys() if k != "last"][0]
                         closes = [float(c[4]) for c in result[key][-50:]]
-                        if is_lower_band_touch(price, closes):
+                        lower_band, _, _ = calculate_bollinger_bands(closes)
+                        if lower_band is not None and price <= lower_band * 1.01:
                             entry_signal = True
                             signal_reason = f"Bollinger touch ${price:,.2f}"
+                            ml_rsi = rsi if rsi is not None else 50
+                            ml_bb_distance = (price - lower_band) / lower_band * 100
                 except Exception as e:
                     log.error(f"Bollinger error {symbol}: {e}")
+
+            # Calculate ML features if entry signal detected
+            if entry_signal and strategy_name == "SCALP":
+                if ml_rsi is None:
+                    ml_rsi = rsi if rsi is not None else 50
+                if ml_bb_distance is None:
+                    # Get Bollinger distance if not already calculated
+                    try:
+                        r = session.get(
+                            f"{KRAKEN_URL}/0/public/OHLC?pair={s['kraken_ohlc']}&interval={cfg['rsi_interval']}",
+                            timeout=30
+                        )
+                        data = r.json()
+                        if not data.get("error") and data["result"]:
+                            result = data["result"]
+                            key = [k for k in result.keys() if k != "last"][0]
+                            closes = [float(c[4]) for c in result[key][-50:]]
+                            lower_band, _, _ = calculate_bollinger_bands(closes)
+                            if lower_band is not None:
+                                ml_bb_distance = (price - lower_band) / lower_band * 100
+                            else:
+                                ml_bb_distance = 0
+                    except:
+                        ml_bb_distance = 0
+                
+                # Get volume ratio
+                ml_volume_ratio = get_volume_ratio(s["kraken_ohlc"], cfg["rsi_interval"])
+                
+                # ML prediction
+                confidence, should_trade = predict_trade_profit(ml_rsi, ml_bb_distance, ml_regime, ml_volume_ratio)
+                log.info(f"🤖 [{strategy_name}] {symbol} ML confidence: {confidence:.2%} (threshold: {ML_CONFIDENCE_THRESHOLD:.0%})")
+                
+                if not should_trade:
+                    log.info(f"⏳ [{strategy_name}] {symbol} ML rejected entry (confidence {confidence:.2%} < {ML_CONFIDENCE_THRESHOLD:.0%})")
+                    continue
+                else:
+                    signal_reason += f" | ML {confidence:.0%}"
 
             # Trend filter
             if entry_signal and strategy_name == "SCALP" and TREND_FILTER_ENABLED:
@@ -737,13 +949,29 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                     else:
                         qty_actual = buy_func(symbol, price)
                         if qty_actual is None: continue
-                positions[symbol] = {"entry": price, "qty": qty_actual, "time": datetime.now(timezone.utc).isoformat()}
+                
+                # Store ML features with the trade for future training
+                trade_entry = {
+                    "entry": price, "qty": qty_actual, 
+                    "time": datetime.now(timezone.utc).isoformat()
+                }
+                if strategy_name == "SCALP":
+                    trade_entry["rsi_at_entry"] = ml_rsi
+                    trade_entry["bb_distance"] = ml_bb_distance
+                    trade_entry["regime"] = regime_to_int(ml_regime)
+                    trade_entry["volume_ratio"] = ml_volume_ratio
+                
+                positions[symbol] = trade_entry
                 trades.append({
                     "symbol": f"{symbol}/USD", "side": "BUY",
                     "price": price, "qty": qty_actual, "pnl": None,
                     "reason": signal_reason,
                     "strategy": strategy_name,
-                    "time": datetime.now(timezone.utc).isoformat()
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "rsi_at_entry": ml_rsi if strategy_name == "SCALP" else None,
+                    "bb_distance": ml_bb_distance if strategy_name == "SCALP" else None,
+                    "regime": regime_to_int(ml_regime) if strategy_name == "SCALP" else None,
+                    "volume_ratio": ml_volume_ratio if strategy_name == "SCALP" else None
                 })
                 log.info(f"📈 [{strategy_name}] BUY {symbol} @ ${price:,.2f} (size: {qty_actual})")
                 break
@@ -780,6 +1008,8 @@ def save_state():
             "rsi_performance": rsi_performance,
             "current_rsi_buy": current_rsi_buy,
             "scalp_last_exit_time": scalp_last_exit_time,
+            "ml_trained": ml_trained,
+            "ml_last_training_trades": ml_last_training_trades,
             "updated": datetime.now(timezone.utc).isoformat()
         }
         with open(STATE_PATH, "w") as f:
@@ -801,6 +1031,7 @@ def load_state():
     global scalp_balance, trend_balance, scalp_positions, trend_positions
     global scalp_trades, trend_trades, scalp_stats, trend_stats
     global rsi_performance, current_rsi_buy, scalp_last_exit_time
+    global ml_trained, ml_last_training_trades
     try:
         if os.path.exists(STATE_PATH):
             with open(STATE_PATH) as f:
@@ -822,6 +1053,9 @@ def load_state():
             STRATEGIES["SCALP"]["rsi_buy"] = current_rsi_buy
             # Load cooldown timers
             scalp_last_exit_time = state.get("scalp_last_exit_time", {})
+            # Load ML state
+            ml_trained = state.get("ml_trained", False)
+            ml_last_training_trades = state.get("ml_last_training_trades", 0)
             log.info(f"✅ Loaded state: Scalp ${scalp_balance:,.2f} Trend ${trend_balance:,.2f} | RSI buy: {current_rsi_buy}")
             return True
     except Exception as e:
@@ -838,7 +1072,7 @@ def bot_tick():
         reset_paper_account()
         os.remove("/tmp/RESET_PAPER")
     
-    # Check for scalp stats reset flag (NEW)
+    # Check for scalp stats reset flag
     if os.path.exists("/tmp/RESET_SCALP_STATS"):
         log.info("🔄 Scalp stats reset signal detected")
         reset_scalp_stats()
@@ -881,6 +1115,10 @@ def bot_tick():
         log.info(f"⏳ Max positions reached ({total_positions}/{MAX_POSITIONS}) – waiting for exits (entries blocked)")
 
     save_state()
+    
+    # Retrain ML model periodically if not trained yet
+    if not ml_trained and len(scalp_trades) >= ML_MIN_TRADES:
+        train_ml_model()
 
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
@@ -890,13 +1128,17 @@ if __name__ == "__main__":
         log.info(f"🧠 Market regime detection: ON")
     if DYNAMIC_RSI_ENABLED:
         log.info(f"📈 Dynamic RSI adaptation: ON (candidates: {RSI_CANDIDATES})")
+    if ML_ENABLED and SKLEARN_AVAILABLE:
+        log.info(f"🤖 ML Predictor: ON (Random Forest, min trades: {ML_MIN_TRADES}, confidence: {ML_CONFIDENCE_THRESHOLD:.0%})")
+    elif ML_ENABLED and not SKLEARN_AVAILABLE:
+        log.info(f"⚠️ ML Predictor: DISABLED (scikit-learn not installed)")
     if VOLUME_FILTER_ENABLED:
         log.info(f"📊 Volume filter: ON")
     log.info(f"📈 TREND: BTC/ETH, RSI(4h) Buy<45 Sell>75 TP5% SL4% $200")
     log.info(f"🎯 Daily profit target: ${DAILY_PROFIT_TARGET} | Daily loss limit: ${MAX_DAILY_LOSS} | Max positions: {MAX_POSITIONS}")
     log.info(f"📱 Telegram hourly summaries: ENABLED")
     log.info(f"🔄 Reset endpoint: http://your-bot:8081/reset_paper")
-    send_telegram(f"🚀 <b>APEX BOT – BTC SCALP ONLY</b>\nRSI 20/80, $50 trades\nDynamic adaptation ON\nHourly summaries")
+    send_telegram(f"🚀 <b>APEX BOT – BTC SCALP ONLY</b>\nRSI 20/80, $50 trades\nDynamic adaptation ON\n🤖 ML Predictor: {'ON' if (ML_ENABLED and SKLEARN_AVAILABLE) else 'OFF'}\nHourly summaries")
 
     # Start command server
     start_command_server()
@@ -914,6 +1156,10 @@ if __name__ == "__main__":
 
     save_state()
     fetch_all_prices()
+    
+    # Initial ML training if enough trades exist
+    if SKLEARN_AVAILABLE and len(scalp_trades) >= ML_MIN_TRADES:
+        train_ml_model()
 
     while True:
         try:
