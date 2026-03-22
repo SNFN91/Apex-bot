@@ -718,6 +718,9 @@ def paper_sell_scalp(symbol, price, qty, pnl=None):
 
 def paper_buy_trend(symbol, price):
     global trend_balance
+    # Only allow BTC for trend as well (new)
+    if symbol != "BTC":
+        return None
     qty = round(STRATEGIES["TREND"]["trade_size"] / price, 6)
     cost = qty * price
     if trend_balance < cost:
@@ -729,6 +732,8 @@ def paper_buy_trend(symbol, price):
 
 def paper_sell_trend(symbol, price, qty, pnl=None):
     global trend_balance
+    if symbol != "BTC":
+        return
     trend_balance += qty * price
     pnl_text = f" | PnL: ${pnl:+.2f}" if pnl is not None else ""
     log.info(f"📄 📈 TREND SELL {symbol} qty={qty} @ ${price:,.2f}{pnl_text} | Trend Balance: ${trend_balance:,.2f}")
@@ -743,8 +748,8 @@ def get_balances():
 def run_exits(strategy_name, cfg, positions, trades, stats, sell_func):
     for s in SYMBOLS:
         symbol = s["symbol"]
-        # For scalp, only process BTC
-        if strategy_name == "SCALP" and symbol != "BTC":
+        # Restrict both SCALP and TREND to BTC only
+        if (strategy_name == "SCALP" or strategy_name == "TREND") and symbol != "BTC":
             continue
         try:
             price = price_cache.get(symbol)
@@ -787,7 +792,7 @@ def run_exits(strategy_name, cfg, positions, trades, stats, sell_func):
                     "time": datetime.now(timezone.utc).isoformat()
                 })
                 
-                # FIX: Update the matching entry trade with pnl for ML training
+                # Update the matching entry trade with pnl for ML training
                 if strategy_name == "SCALP":
                     for t in trades:
                         if (t['symbol'] == f"{symbol}/USD" and 
@@ -810,8 +815,8 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
 
     for s in SYMBOLS:
         symbol = s["symbol"]
-        # For scalp, only process BTC
-        if strategy_name == "SCALP" and symbol != "BTC":
+        # Restrict both SCALP and TREND to BTC only
+        if (strategy_name == "SCALP" or strategy_name == "TREND") and symbol != "BTC":
             continue
         try:
             price = price_cache.get(symbol)
@@ -871,6 +876,19 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                             ml_bb_distance = (price - lower_band) / lower_band * 100
                 except Exception as e:
                     log.error(f"Bollinger error {symbol}: {e}")
+
+            # === NEW: 5-MINUTE RSI CONFIRMATION FOR SCALP ===
+            if entry_signal and strategy_name == "SCALP":
+                rsi_5m = get_rsi(s["kraken_ohlc"], symbol, 5)  # 5‑minute interval
+                if rsi_5m is None:
+                    log.warning(f"⚠️ [{strategy_name}] {symbol} 5‑min RSI unavailable – skipping entry")
+                    continue
+                
+                if rsi_5m >= 50:
+                    log.info(f"⏳ [{strategy_name}] {symbol} blocked by 5‑min RSI ({rsi_5m:.1f} >= 50) – higher timeframe not confirmed")
+                    continue
+                else:
+                    signal_reason += f" | 5m RSI {rsi_5m:.1f}"
 
             # Calculate ML features if entry signal detected
             if entry_signal and strategy_name == "SCALP":
@@ -1123,7 +1141,7 @@ def bot_tick():
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info(f"⚡📈 APEX BOT – BTC SCALP ONLY, RSI 20/80, $50 TRADE SIZE")
-    log.info(f"⚡ SCALP: BTC only, RSI({RSI_PERIOD}) Buy<{current_rsi_buy} OR Bollinger | Sell>80 TP1% SL0.3% | Time exit 1h | Trend filter: {TREND_FILTER_ENABLED}")
+    log.info(f"⚡ SCALP: BTC only, RSI({RSI_PERIOD}) Buy<{current_rsi_buy} OR Bollinger | 5m RSI gate <50 | Sell>80 TP1% SL0.3% | Time exit 1h | Trend filter: {TREND_FILTER_ENABLED}")
     if REGIME_DETECTION_ENABLED:
         log.info(f"🧠 Market regime detection: ON")
     if DYNAMIC_RSI_ENABLED:
@@ -1134,11 +1152,11 @@ if __name__ == "__main__":
         log.info(f"⚠️ ML Predictor: DISABLED (scikit-learn not installed)")
     if VOLUME_FILTER_ENABLED:
         log.info(f"📊 Volume filter: ON")
-    log.info(f"📈 TREND: BTC/ETH, RSI(4h) Buy<45 Sell>75 TP5% SL4% $200")
+    log.info(f"📈 TREND: BTC only, RSI(4h) Buy<45 Sell>75 TP5% SL4% $200")
     log.info(f"🎯 Daily profit target: ${DAILY_PROFIT_TARGET} | Daily loss limit: ${MAX_DAILY_LOSS} | Max positions: {MAX_POSITIONS}")
     log.info(f"📱 Telegram hourly summaries: ENABLED")
     log.info(f"🔄 Reset endpoint: http://your-bot:8081/reset_paper")
-    send_telegram(f"🚀 <b>APEX BOT – BTC SCALP ONLY</b>\nRSI 20/80, $50 trades\nDynamic adaptation ON\n🤖 ML Predictor: {'ON' if (ML_ENABLED and SKLEARN_AVAILABLE) else 'OFF'}\nHourly summaries")
+    send_telegram(f"🚀 <b>APEX BOT – BTC SCALP ONLY</b>\nRSI 20/80, $50 trades\n5m RSI gate <50\nDynamic adaptation ON\n🤖 ML Predictor: {'ON' if (ML_ENABLED and SKLEARN_AVAILABLE) else 'OFF'}\nHourly summaries")
 
     # Start command server
     start_command_server()
