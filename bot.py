@@ -25,6 +25,7 @@ TRADING_MODE      = os.environ.get("TRADING_MODE", "paper")
 KRAKEN_API_KEY    = os.environ.get("KRAKEN_API_KEY", "")
 KRAKEN_API_SECRET = os.environ.get("KRAKEN_API_SECRET", "")
 KRAKEN_URL        = "https://api.kraken.com"
+KRAKEN_TAKER_FEE  = 0.0026  # 0.26% taker fee for fee simulation
 
 # ═══ SAFETY FEATURES ══════════════════════════════════════════════════════════
 MAX_DAILY_LOSS = 10.0
@@ -75,6 +76,11 @@ ml_scaler = None
 ml_trained = False
 ml_last_training_trades = 0
 
+# ═══ VWAP FILTER (PHASE 3.5) ═════════════════════════════════════════════════
+VWAP_FILTER_ENABLED = True          # Can be toggled
+vwap_cache = {}                     # symbol -> {'value': float, 'timestamp': float}
+VWAP_CACHE_SECONDS = 300            # Refresh every 5 minutes
+
 def regime_to_int(regime):
     """Convert regime string to integer for ML."""
     mapping = {
@@ -86,12 +92,13 @@ def regime_to_int(regime):
     return mapping.get(regime, 0)
 
 def prepare_ml_features(trade_data):
-    """Extract features from trade record."""
+    """Extract features from trade record (5 features)."""
     return [
         trade_data.get('rsi_at_entry', 50),           # RSI value at entry
         trade_data.get('bb_distance', 0),             # Distance from lower BB as %
         trade_data.get('regime', 0),                  # Market regime (0-3)
-        trade_data.get('volume_ratio', 1.0)           # Volume ratio (current/avg)
+        trade_data.get('volume_ratio', 1.0),          # Volume ratio (current/avg)
+        trade_data.get('vwap_distance', 0)            # Distance from VWAP as % (new)
     ]
 
 def train_ml_model():
@@ -154,14 +161,14 @@ def train_ml_model():
         log.error(f"ML training error: {e}")
         return False
 
-def predict_trade_profit(rsi_value, bb_distance, regime_str, volume_ratio):
+def predict_trade_profit(rsi_value, bb_distance, regime_str, volume_ratio, vwap_distance):
     """Predict if trade will be profitable. Returns (confidence, should_trade)."""
     if not ML_ENABLED or not SKLEARN_AVAILABLE or not ml_trained:
         return 0.5, True  # Default: allow trade if ML not ready
     
     try:
         regime_int = regime_to_int(regime_str)
-        features = [[rsi_value, bb_distance, regime_int, volume_ratio]]
+        features = [[rsi_value, bb_distance, regime_int, volume_ratio, vwap_distance]]
         
         # Scale features
         features_scaled = ml_scaler.transform(features)
@@ -208,7 +215,6 @@ STRATEGIES = {
 # ═══ SYMBOLS – Scalp only BTC, Trend both ════════════════════════════════════
 SYMBOLS = [
     {"symbol": "BTC", "kraken_ticker": "XXBTZUSD", "kraken_ohlc": "XBTUSD",  "kraken_order": "XXBTZUSD"},
-    {"symbol": "ETH", "kraken_ticker": "XETHZUSD", "kraken_ohlc": "ETHUSD",  "kraken_order": "XETHZUSD"},
 ]
 
 # ═══ STATE ═══════════════════════════════════════════════════════════════════
@@ -271,6 +277,7 @@ def reset_paper_account():
     global rsi_performance, current_rsi_buy, rsi_adapt_counter
     global hourly_trades, daily_loss, daily_profit, scalp_last_exit_time
     global ml_model, ml_scaler, ml_trained, ml_last_training_trades
+    global vwap_cache
     
     if TRADING_MODE != "paper":
         log.warning("Reset attempted in live mode – ignored")
@@ -313,6 +320,9 @@ def reset_paper_account():
     ml_scaler = None
     ml_trained = False
     ml_last_training_trades = 0
+    
+    # Reset VWAP cache
+    vwap_cache = {}
     
     save_state()
     log.info("✅ Paper account reset complete")
@@ -649,6 +659,69 @@ def detect_market_regime(kraken_ohlc, interval):
         log.error(f"Regime detection error: {e}")
         return 'ranging'
 
+# ═══ VWAP CALCULATION ════════════════════════════════════════════════════════
+def get_daily_vwap(kraken_ohlc):
+    """Fetch 1-minute OHLC for the current day and calculate VWAP."""
+    global vwap_cache
+    now_ts = time.time()
+    
+    # Check cache
+    if kraken_ohlc in vwap_cache:
+        cached = vwap_cache[kraken_ohlc]
+        if now_ts - cached['timestamp'] < VWAP_CACHE_SECONDS:
+            return cached['value']
+    
+    try:
+        # Start of day (UTC)
+        start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        since = int(start_of_day.timestamp())
+        
+        # Fetch up to 1440 candles (24h) – enough for the day
+        url = f"{KRAKEN_URL}/0/public/OHLC"
+        params = {
+            "pair": kraken_ohlc,
+            "interval": 1,
+            "since": since
+        }
+        r = session.get(url, params=params, timeout=30)
+        data = r.json()
+        if data.get("error"):
+            log.error(f"VWAP fetch error: {data['error']}")
+            return None
+        
+        result = data["result"]
+        key = [k for k in result.keys() if k != "last"][0]
+        candles = result[key]
+        
+        if not candles:
+            log.warning(f"No candles for VWAP calculation for {kraken_ohlc}")
+            return None
+        
+        sum_typical_volume = 0.0
+        sum_volume = 0.0
+        
+        for candle in candles:
+            # candle: [time, open, high, low, close, vwap, volume, count]
+            high = float(candle[2])
+            low = float(candle[3])
+            close = float(candle[4])
+            volume = float(candle[6])
+            typical_price = (high + low + close) / 3.0
+            sum_typical_volume += typical_price * volume
+            sum_volume += volume
+        
+        if sum_volume == 0:
+            return None
+        
+        vwap = sum_typical_volume / sum_volume
+        
+        # Cache
+        vwap_cache[kraken_ohlc] = {'value': vwap, 'timestamp': now_ts}
+        return vwap
+    except Exception as e:
+        log.error(f"Error calculating VWAP for {kraken_ohlc}: {e}")
+        return None
+
 # ═══ KRAKEN LIVE ══════════════════════════════════════════════════════════════
 def kraken_sign(urlpath, data):
     postdata = urllib.parse.urlencode(data)
@@ -687,24 +760,42 @@ def paper_buy_scalp(symbol, price):
         return None
     qty = round(STRATEGIES["SCALP"]["trade_size"] / price, 6)
     cost = qty * price
-    if scalp_balance < cost:
-        log.warning(f"Insufficient scalp balance for {symbol}")
+    fee = cost * KRAKEN_TAKER_FEE
+    total_cost = cost + fee
+    if scalp_balance < total_cost:
+        log.warning(f"Insufficient scalp balance for {symbol} (need ${total_cost:.2f}, have ${scalp_balance:.2f})")
         return None
-    scalp_balance -= cost
-    log.info(f"📄 ⚡ SCALP BUY {symbol} qty={qty} @ ${price:,.2f} | Scalp Balance: ${scalp_balance:,.2f}")
+    scalp_balance -= total_cost
+    log.info(f"📄 ⚡ SCALP BUY {symbol} qty={qty} @ ${price:,.2f} | Cost: ${cost:.2f} | Fee: ${fee:.2f} | Scalp Balance: ${scalp_balance:,.2f}")
     return qty
 
 def paper_sell_scalp(symbol, price, qty, pnl=None):
     global scalp_balance, hourly_trades, scalp_last_exit_time
     if symbol != "BTC":
         return
-    scalp_balance += qty * price
-    pnl_text = f" | PnL: ${pnl:+.2f}" if pnl is not None else ""
+    gross_proceeds = qty * price
+    fee = gross_proceeds * KRAKEN_TAKER_FEE
+    net_proceeds = gross_proceeds - fee
+    scalp_balance += net_proceeds
+    
+    # Calculate fee-adjusted PnL if entry price was stored
+    fee_adjusted_pnl = pnl
+    if pnl is not None:
+        # Recalculate PnL with fees: (sell_net - buy_total_cost) 
+        # But we stored raw pnl in position, so we approximate:
+        # Raw PnL was qty * (price - entry)
+        # Fee-adjusted: qty * price * (1 - fee) - qty * entry * (1 + fee)
+        # = raw_pnl - fee * qty * (price + entry)
+        # For simplicity, we just note the fee impact
+        total_fees = gross_proceeds * KRAKEN_TAKER_FEE + (qty * price * KRAKEN_TAKER_FEE)  # entry fee approx
+        fee_adjusted_pnl = pnl - fee
+    
+    pnl_text = f" | Gross PnL: ${pnl:+.2f} | Fee: ${fee:.2f} | Net: ${fee_adjusted_pnl:+.2f}" if pnl is not None else f" | Fee: ${fee:.2f}"
     log.info(f"📄 ⚡ SCALP SELL {symbol} qty={qty} @ ${price:,.2f}{pnl_text} | Scalp Balance: ${scalp_balance:,.2f}")
     if pnl is not None:
         trade_record = {
             'symbol': symbol,
-            'pnl': pnl,
+            'pnl': fee_adjusted_pnl if fee_adjusted_pnl is not None else pnl - fee,
             'rsi_buy_used': STRATEGIES["SCALP"]["rsi_buy"],
             'time': datetime.now(timezone.utc).isoformat()
         }
@@ -723,19 +814,29 @@ def paper_buy_trend(symbol, price):
         return None
     qty = round(STRATEGIES["TREND"]["trade_size"] / price, 6)
     cost = qty * price
-    if trend_balance < cost:
-        log.warning(f"Insufficient trend balance for {symbol}")
+    fee = cost * KRAKEN_TAKER_FEE
+    total_cost = cost + fee
+    if trend_balance < total_cost:
+        log.warning(f"Insufficient trend balance for {symbol} (need ${total_cost:.2f}, have ${trend_balance:.2f})")
         return None
-    trend_balance -= cost
-    log.info(f"📄 📈 TREND BUY {symbol} qty={qty} @ ${price:,.2f} | Trend Balance: ${trend_balance:,.2f}")
+    trend_balance -= total_cost
+    log.info(f"📄 📈 TREND BUY {symbol} qty={qty} @ ${price:,.2f} | Cost: ${cost:.2f} | Fee: ${fee:.2f} | Trend Balance: ${trend_balance:,.2f}")
     return qty
 
 def paper_sell_trend(symbol, price, qty, pnl=None):
     global trend_balance
     if symbol != "BTC":
         return
-    trend_balance += qty * price
-    pnl_text = f" | PnL: ${pnl:+.2f}" if pnl is not None else ""
+    gross_proceeds = qty * price
+    fee = gross_proceeds * KRAKEN_TAKER_FEE
+    net_proceeds = gross_proceeds - fee
+    trend_balance += net_proceeds
+    
+    fee_adjusted_pnl = None
+    if pnl is not None:
+        fee_adjusted_pnl = pnl - fee
+    
+    pnl_text = f" | Gross PnL: ${pnl:+.2f} | Fee: ${fee:.2f} | Net: ${fee_adjusted_pnl:+.2f}" if pnl is not None else f" | Fee: ${fee:.2f}"
     log.info(f"📄 📈 TREND SELL {symbol} qty={qty} @ ${price:,.2f}{pnl_text} | Trend Balance: ${trend_balance:,.2f}")
 
 def get_balances():
@@ -804,8 +905,10 @@ def run_exits(strategy_name, cfg, positions, trades, stats, sell_func):
                 del positions[symbol]
                 log.info(f"{'✅' if is_win else '🛑'} [{strategy_name}] SELL {symbol} | {reason} | PnL={pnl:+.4f}")
 
-        except Exception as e:
-            log.error(f"[{strategy_name}] Exit error {symbol}: {e}")
+        except (KeyError, ValueError, TypeError) as e:
+            log.exception(f"[{strategy_name}] Exit error {symbol}: {e}")
+        except requests.exceptions.RequestException as e:
+            log.exception(f"[{strategy_name}] Exit network error {symbol}: {e}")
 
 # ═══ ENTRY CHECKS ════════════════════════════════════════════════════════════
 def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
@@ -849,6 +952,7 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
             ml_bb_distance = None
             ml_regime = regime
             ml_volume_ratio = None
+            ml_vwap_distance = None
 
             # Signal 1: RSI – uses current_rsi_buy (dynamic)
             if rsi is not None and rsi < cfg["rsi_buy"]:
@@ -877,7 +981,7 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                 except Exception as e:
                     log.error(f"Bollinger error {symbol}: {e}")
 
-            # === NEW: 5-MINUTE RSI CONFIRMATION FOR SCALP ===
+            # === 5-MINUTE RSI CONFIRMATION FOR SCALP ===
             if entry_signal and strategy_name == "SCALP":
                 rsi_5m = get_rsi(s["kraken_ohlc"], symbol, 5)  # 5‑minute interval
                 if rsi_5m is None:
@@ -889,6 +993,20 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                     continue
                 else:
                     signal_reason += f" | 5m RSI {rsi_5m:.1f}"
+
+            # === VWAP FILTER FOR SCALP ===
+            if entry_signal and strategy_name == "SCALP" and VWAP_FILTER_ENABLED:
+                vwap = get_daily_vwap(s["kraken_ohlc"])
+                if vwap is None:
+                    log.warning(f"⚠️ [{strategy_name}] {symbol} VWAP unavailable – skipping entry")
+                    continue
+                
+                if price < vwap:
+                    log.info(f"⏳ [{strategy_name}] {symbol} blocked by VWAP (price ${price:,.2f} < VWAP ${vwap:,.2f})")
+                    continue
+                else:
+                    signal_reason += f" | Above VWAP"
+                    ml_vwap_distance = (price - vwap) / vwap * 100
 
             # Calculate ML features if entry signal detected
             if entry_signal and strategy_name == "SCALP":
@@ -917,8 +1035,14 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                 # Get volume ratio
                 ml_volume_ratio = get_volume_ratio(s["kraken_ohlc"], cfg["rsi_interval"])
                 
+                # If VWAP distance wasn't set (filter disabled or price above), set to 0
+                if ml_vwap_distance is None:
+                    ml_vwap_distance = 0
+                
                 # ML prediction
-                confidence, should_trade = predict_trade_profit(ml_rsi, ml_bb_distance, ml_regime, ml_volume_ratio)
+                confidence, should_trade = predict_trade_profit(
+                    ml_rsi, ml_bb_distance, ml_regime, ml_volume_ratio, ml_vwap_distance
+                )
                 log.info(f"🤖 [{strategy_name}] {symbol} ML confidence: {confidence:.2%} (threshold: {ML_CONFIDENCE_THRESHOLD:.0%})")
                 
                 if not should_trade:
@@ -958,11 +1082,13 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                     if trade_size != cfg["trade_size"]:
                         qty = round(trade_size / price, 6)
                         cost = qty * price
-                        if scalp_balance < cost:
+                        fee = cost * KRAKEN_TAKER_FEE
+                        total_cost = cost + fee
+                        if scalp_balance < total_cost:
                             log.warning(f"Insufficient scalp balance for {symbol} with reduced size")
                             continue
-                        scalp_balance -= cost
-                        log.info(f"📄 ⚡ SCALP BUY {symbol} qty={qty} @ ${price:,.2f} (volatile size) | Scalp Balance: ${scalp_balance:,.2f}")
+                        scalp_balance -= total_cost
+                        log.info(f"📄 ⚡ SCALP BUY {symbol} qty={qty} @ ${price:,.2f} (volatile size) | Cost: ${cost:.2f} | Fee: ${fee:.2f} | Scalp Balance: ${scalp_balance:,.2f}")
                         qty_actual = qty
                     else:
                         qty_actual = buy_func(symbol, price)
@@ -978,6 +1104,7 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                     trade_entry["bb_distance"] = ml_bb_distance
                     trade_entry["regime"] = regime_to_int(ml_regime)
                     trade_entry["volume_ratio"] = ml_volume_ratio
+                    trade_entry["vwap_distance"] = ml_vwap_distance
                 
                 positions[symbol] = trade_entry
                 trades.append({
@@ -989,15 +1116,18 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                     "rsi_at_entry": ml_rsi if strategy_name == "SCALP" else None,
                     "bb_distance": ml_bb_distance if strategy_name == "SCALP" else None,
                     "regime": regime_to_int(ml_regime) if strategy_name == "SCALP" else None,
-                    "volume_ratio": ml_volume_ratio if strategy_name == "SCALP" else None
+                    "volume_ratio": ml_volume_ratio if strategy_name == "SCALP" else None,
+                    "vwap_distance": ml_vwap_distance if strategy_name == "SCALP" else None
                 })
                 log.info(f"📈 [{strategy_name}] BUY {symbol} @ ${price:,.2f} (size: {qty_actual})")
                 break
             else:
                 log.info(f"⏳ [{strategy_name}] {symbol} RSI={rsi} — waiting for signal")
 
-        except Exception as e:
-            log.error(f"[{strategy_name}] Entry error {symbol}: {e}")
+        except (KeyError, ValueError, TypeError) as e:
+            log.exception(f"[{strategy_name}] Entry error {symbol}: {e}")
+        except requests.exceptions.RequestException as e:
+            log.exception(f"[{strategy_name}] Entry network error {symbol}: {e}")
 
 # ═══ SAVE/LOAD STATE ═════════════════════════════════════════════════════════
 def save_state():
@@ -1009,13 +1139,13 @@ def save_state():
             "scalp": {
                 "balance": scalp_bal,
                 "positions": scalp_positions,
-                "trades": scalp_trades[-50:],
+                "trades": scalp_trades[-200:],
                 "stats": scalp_stats
             },
             "trend": {
                 "balance": trend_bal,
                 "positions": trend_positions,
-                "trades": trend_trades[-50:],
+                "trades": trend_trades[-200:],
                 "stats": trend_stats
             },
             "total_balance": total_bal,
@@ -1141,7 +1271,7 @@ def bot_tick():
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info(f"⚡📈 APEX BOT – BTC SCALP ONLY, RSI 20/80, $50 TRADE SIZE")
-    log.info(f"⚡ SCALP: BTC only, RSI({RSI_PERIOD}) Buy<{current_rsi_buy} OR Bollinger | 5m RSI gate <50 | Sell>80 TP1% SL0.3% | Time exit 1h | Trend filter: {TREND_FILTER_ENABLED}")
+    log.info(f"⚡ SCALP: BTC only, RSI({RSI_PERIOD}) Buy<{current_rsi_buy} OR Bollinger | 5m RSI gate <50 | VWAP filter: {'ON' if VWAP_FILTER_ENABLED else 'OFF'} | Sell>80 TP1% SL0.3% | Time exit 1h | Trend filter: {TREND_FILTER_ENABLED}")
     if REGIME_DETECTION_ENABLED:
         log.info(f"🧠 Market regime detection: ON")
     if DYNAMIC_RSI_ENABLED:
@@ -1156,7 +1286,8 @@ if __name__ == "__main__":
     log.info(f"🎯 Daily profit target: ${DAILY_PROFIT_TARGET} | Daily loss limit: ${MAX_DAILY_LOSS} | Max positions: {MAX_POSITIONS}")
     log.info(f"📱 Telegram hourly summaries: ENABLED")
     log.info(f"🔄 Reset endpoint: http://your-bot:8081/reset_paper")
-    send_telegram(f"🚀 <b>APEX BOT – BTC SCALP ONLY</b>\nRSI 20/80, $50 trades\n5m RSI gate <50\nDynamic adaptation ON\n🤖 ML Predictor: {'ON' if (ML_ENABLED and SKLEARN_AVAILABLE) else 'OFF'}\nHourly summaries")
+    log.info(f"💰 Fee simulation: ON ({KRAKEN_TAKER_FEE:.2%} taker fee)")
+    send_telegram(f"🚀 <b>APEX BOT – BTC SCALP ONLY</b>\nRSI 20/80, $50 trades\n5m RSI gate <50\nVWAP filter: {'ON' if VWAP_FILTER_ENABLED else 'OFF'}\nDynamic adaptation ON\n🤖 ML Predictor: {'ON' if (ML_ENABLED and SKLEARN_AVAILABLE) else 'OFF'}\nFee simulation: ON ({KRAKEN_TAKER_FEE:.2%})\nHourly summaries")
 
     # Start command server
     start_command_server()
