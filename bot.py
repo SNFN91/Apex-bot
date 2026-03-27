@@ -6,6 +6,14 @@ import numpy as np
 from collections import deque
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import pandas_ta as ta
+
+# TA-Lib import (optional)
+try:
+    import talib
+    TALIB_AVAILABLE = True
+except ImportError:
+    TALIB_AVAILABLE = False
 
 # ML imports
 try:
@@ -81,6 +89,11 @@ VWAP_FILTER_ENABLED = True          # Can be toggled
 vwap_cache = {}                     # symbol -> {'value': float, 'timestamp': float}
 VWAP_CACHE_SECONDS = 300            # Refresh every 5 minutes
 
+# ═══ ATR CONFIG (UPGRADE 2) ═════════════════════════════════════════════════
+atr_cache = {}                      # symbol -> {'value': float, 'timestamp': float}
+ATR_CACHE_SECONDS = 300             # Refresh every 5 minutes
+ATR_PERIOD = 14
+
 def regime_to_int(regime):
     """Convert regime string to integer for ML."""
     mapping = {
@@ -92,13 +105,15 @@ def regime_to_int(regime):
     return mapping.get(regime, 0)
 
 def prepare_ml_features(trade_data):
-    """Extract features from trade record (5 features)."""
+    """Extract features from trade record (7 features)."""
     return [
         trade_data.get('rsi_at_entry', 50),           # RSI value at entry
         trade_data.get('bb_distance', 0),             # Distance from lower BB as %
         trade_data.get('regime', 0),                  # Market regime (0-3)
         trade_data.get('volume_ratio', 1.0),          # Volume ratio (current/avg)
-        trade_data.get('vwap_distance', 0)            # Distance from VWAP as % (new)
+        trade_data.get('vwap_distance', 0),           # Distance from VWAP as %
+        trade_data.get('atr_value', 0),               # ATR value (Upgrade 2)
+        trade_data.get('vwap_deviation_pct', 0)       # VWAP deviation % (Upgrade 3)
     ]
 
 def train_ml_model():
@@ -161,14 +176,14 @@ def train_ml_model():
         log.error(f"ML training error: {e}")
         return False
 
-def predict_trade_profit(rsi_value, bb_distance, regime_str, volume_ratio, vwap_distance):
+def predict_trade_profit(rsi_value, bb_distance, regime_str, volume_ratio, vwap_distance, atr_value=0, vwap_deviation_pct=0):
     """Predict if trade will be profitable. Returns (confidence, should_trade)."""
     if not ML_ENABLED or not SKLEARN_AVAILABLE or not ml_trained:
         return 0.5, True  # Default: allow trade if ML not ready
     
     try:
         regime_int = regime_to_int(regime_str)
-        features = [[rsi_value, bb_distance, regime_int, volume_ratio, vwap_distance]]
+        features = [[rsi_value, bb_distance, regime_int, volume_ratio, vwap_distance, atr_value, vwap_deviation_pct]]
         
         # Scale features
         features_scaled = ml_scaler.transform(features)
@@ -277,7 +292,7 @@ def reset_paper_account():
     global rsi_performance, current_rsi_buy, rsi_adapt_counter
     global hourly_trades, daily_loss, daily_profit, scalp_last_exit_time
     global ml_model, ml_scaler, ml_trained, ml_last_training_trades
-    global vwap_cache
+    global vwap_cache, atr_cache
     
     if TRADING_MODE != "paper":
         log.warning("Reset attempted in live mode – ignored")
@@ -321,8 +336,9 @@ def reset_paper_account():
     ml_trained = False
     ml_last_training_trades = 0
     
-    # Reset VWAP cache
+    # Reset caches
     vwap_cache = {}
+    atr_cache = {}
     
     save_state()
     log.info("✅ Paper account reset complete")
@@ -526,30 +542,58 @@ def get_rsi(kraken_ohlc, symbol, interval):
     return None
 
 def calc_rsi(prices):
-    """Calculate RSI using global RSI_PERIOD."""
+    """Calculate RSI using pandas-ta."""
     if len(prices) < RSI_PERIOD + 1:
         return None
-    recent = prices[-(RSI_PERIOD+1):]
-    gains = losses = 0
-    for i in range(1, len(recent)):
-        d = recent[i] - recent[i-1]
-        if d > 0: gains += d
-        else: losses += abs(d)
-    ag = gains / RSI_PERIOD
-    al = losses / RSI_PERIOD
-    if al == 0: return 100
-    return round(100 - 100/(1 + ag/al), 2)
+    try:
+        import pandas as pd
+        series = pd.Series(prices)
+        rsi_series = ta.rsi(series, length=RSI_PERIOD)
+        if rsi_series is not None and not rsi_series.empty:
+            return round(rsi_series.iloc[-1], 2)
+        return None
+    except Exception as e:
+        log.error(f"RSI calculation error: {e}")
+        # Fallback to manual calculation if pandas-ta fails
+        if len(prices) < RSI_PERIOD + 1:
+            return None
+        recent = prices[-(RSI_PERIOD+1):]
+        gains = losses = 0
+        for i in range(1, len(recent)):
+            d = recent[i] - recent[i-1]
+            if d > 0: gains += d
+            else: losses += abs(d)
+        ag = gains / RSI_PERIOD
+        al = losses / RSI_PERIOD
+        if al == 0: return 100
+        return round(100 - 100/(1 + ag/al), 2)
 
 def calculate_bollinger_bands(prices, period=20, std_dev=2):
+    """Calculate Bollinger Bands using pandas-ta."""
     if len(prices) < period:
         return None, None, None
-    recent = prices[-period:]
-    middle_band = sum(recent) / period
-    variance = sum((x - middle_band) ** 2 for x in recent) / period
-    std = variance ** 0.5
-    lower_band = middle_band - (std_dev * std)
-    upper_band = middle_band + (std_dev * std)
-    return lower_band, middle_band, upper_band
+    try:
+        import pandas as pd
+        series = pd.Series(prices)
+        bbands = ta.bbands(series, length=period, std=std_dev)
+        if bbands is not None and not bbands.empty:
+            lower = bbands.iloc[-1]['BBL_20_2.0']
+            middle = bbands.iloc[-1]['BBM_20_2.0']
+            upper = bbands.iloc[-1]['BBU_20_2.0']
+            return lower, middle, upper
+        return None, None, None
+    except Exception as e:
+        log.error(f"Bollinger Bands calculation error: {e}")
+        # Fallback to manual calculation
+        if len(prices) < period:
+            return None, None, None
+        recent = prices[-period:]
+        middle_band = sum(recent) / period
+        variance = sum((x - middle_band) ** 2 for x in recent) / period
+        std = variance ** 0.5
+        lower_band = middle_band - (std_dev * std)
+        upper_band = middle_band + (std_dev * std)
+        return lower_band, middle_band, upper_band
 
 def is_lower_band_touch(price, prices, threshold_pct=0.01):
     lower_band, middle, upper = calculate_bollinger_bands(prices)
@@ -722,6 +766,72 @@ def get_daily_vwap(kraken_ohlc):
         log.error(f"Error calculating VWAP for {kraken_ohlc}: {e}")
         return None
 
+# ═══ ATR CALCULATION (UPGRADE 2) ════════════════════════════════════════════
+def get_atr(kraken_ohlc, interval, period=14):
+    """Fetch OHLC data and calculate ATR using pandas-ta."""
+    global atr_cache
+    cache_key = f"{kraken_ohlc}_{interval}"
+    now_ts = time.time()
+    
+    # Check cache
+    if cache_key in atr_cache:
+        cached = atr_cache[cache_key]
+        if now_ts - cached['timestamp'] < ATR_CACHE_SECONDS:
+            return cached['value']
+    
+    try:
+        r = session.get(
+            f"{KRAKEN_URL}/0/public/OHLC?pair={kraken_ohlc}&interval={interval}",
+            timeout=30
+        )
+        data = r.json()
+        if data.get("error") or not data["result"]:
+            return None
+        
+        result = data["result"]
+        key = [k for k in result.keys() if k != "last"][0]
+        candles = result[key]
+        
+        if len(candles) < period + 1:
+            return None
+        
+        # Extract high, low, close
+        highs = [float(c[2]) for c in candles[-(period+1):]]
+        lows = [float(c[3]) for c in candles[-(period+1):]]
+        closes = [float(c[4]) for c in candles[-(period+1):]]
+        
+        import pandas as pd
+        high_series = pd.Series(highs)
+        low_series = pd.Series(lows)
+        close_series = pd.Series(closes)
+        
+        atr_series = ta.atr(high_series, low_series, close_series, length=period)
+        if atr_series is not None and not atr_series.empty:
+            atr_value = atr_series.iloc[-1]
+            # Cache
+            atr_cache[cache_key] = {'value': atr_value, 'timestamp': now_ts}
+            return atr_value
+        return None
+    except Exception as e:
+        log.error(f"ATR calculation error for {kraken_ohlc}: {e}")
+        return None
+
+def get_dynamic_trade_size(base_size, atr_value):
+    """Calculate dynamic trade size based on ATR."""
+    if atr_value is None:
+        return round(base_size)
+    
+    if atr_value < 200:
+        multiplier = 1.3
+    elif atr_value < 500:
+        multiplier = 1.0
+    elif atr_value < 800:
+        multiplier = 0.7
+    else:
+        multiplier = 0.5
+    
+    return round(base_size * multiplier)
+
 # ═══ KRAKEN LIVE ══════════════════════════════════════════════════════════════
 def kraken_sign(urlpath, data):
     postdata = urllib.parse.urlencode(data)
@@ -753,12 +863,14 @@ def kraken_place_order(pair, side, qty):
     })
 
 # ═══ PAPER TRADING ════════════════════════════════════════════════════════════
-def paper_buy_scalp(symbol, price):
+def paper_buy_scalp(symbol, price, trade_size=None):
     global scalp_balance
     # Only allow BTC for scalp
     if symbol != "BTC":
         return None
-    qty = round(STRATEGIES["SCALP"]["trade_size"] / price, 6)
+    # Use provided trade_size or fall back to config default
+    resolved_trade_size = trade_size if trade_size is not None else STRATEGIES["SCALP"]["trade_size"]
+    qty = round(resolved_trade_size / price, 6)
     cost = qty * price
     fee = cost * KRAKEN_TAKER_FEE
     total_cost = cost + fee
@@ -946,6 +1058,7 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
             rsi = get_rsi(s["kraken_ohlc"], symbol, cfg["rsi_interval"])
             entry_signal = False
             signal_reason = ""
+            is_vwap_reversion = False  # Flag for VWAP reversion entries
             
             # Store ML features if entry signal detected
             ml_rsi = None
@@ -953,6 +1066,8 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
             ml_regime = regime
             ml_volume_ratio = None
             ml_vwap_distance = None
+            ml_atr_value = None
+            ml_vwap_deviation_pct = None
 
             # Signal 1: RSI – uses current_rsi_buy (dynamic)
             if rsi is not None and rsi < cfg["rsi_buy"]:
@@ -981,8 +1096,24 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                 except Exception as e:
                     log.error(f"Bollinger error {symbol}: {e}")
 
-            # === 5-MINUTE RSI CONFIRMATION FOR SCALP ===
-            if entry_signal and strategy_name == "SCALP":
+            # === VWAP FILTER FOR SCALP (Signal 1 & 2 only) ===
+            # Only apply VWAP filter block to RSI and Bollinger signals, not VWAP Reversion
+            vwap = None
+            if strategy_name == "SCALP" and (entry_signal and not is_vwap_reversion) and VWAP_FILTER_ENABLED:
+                vwap = get_daily_vwap(s["kraken_ohlc"])
+                if vwap is None:
+                    log.warning(f"⚠️ [{strategy_name}] {symbol} VWAP unavailable – skipping entry")
+                    continue
+                
+                if price < vwap:
+                    log.info(f"⏳ [{strategy_name}] {symbol} blocked by VWAP filter (price ${price:,.2f} < VWAP ${vwap:,.2f})")
+                    continue
+                else:
+                    signal_reason += f" | Above VWAP"
+                    ml_vwap_distance = (price - vwap) / vwap * 100
+
+            # === 5-MINUTE RSI CONFIRMATION FOR SCALP (Signal 1 & 2) ===
+            if entry_signal and strategy_name == "SCALP" and not is_vwap_reversion:
                 rsi_5m = get_rsi(s["kraken_ohlc"], symbol, 5)  # 5‑minute interval
                 if rsi_5m is None:
                     log.warning(f"⚠️ [{strategy_name}] {symbol} 5‑min RSI unavailable – skipping entry")
@@ -994,22 +1125,76 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                 else:
                     signal_reason += f" | 5m RSI {rsi_5m:.1f}"
 
-            # === VWAP FILTER FOR SCALP ===
-            if entry_signal and strategy_name == "SCALP" and VWAP_FILTER_ENABLED:
-                vwap = get_daily_vwap(s["kraken_ohlc"])
+            # === SIGNAL 3: VWAP REVERSION ENTRY (Upgrade 3) ===
+            if strategy_name == "SCALP" and not entry_signal and symbol == "BTC":
+                # Fetch VWAP if not already fetched
                 if vwap is None:
-                    log.warning(f"⚠️ [{strategy_name}] {symbol} VWAP unavailable – skipping entry")
-                    continue
+                    vwap = get_daily_vwap(s["kraken_ohlc"])
                 
-                if price < vwap:
-                    log.info(f"⏳ [{strategy_name}] {symbol} blocked by VWAP (price ${price:,.2f} < VWAP ${vwap:,.2f})")
-                    continue
-                else:
-                    signal_reason += f" | Above VWAP"
-                    ml_vwap_distance = (price - vwap) / vwap * 100
+                if vwap is not None:
+                    # Calculate deviation
+                    deviation_pct = (price - vwap) / vwap * 100  # negative = below VWAP
+                    
+                    # Condition 1: Price is between 0.10% and 0.45% BELOW VWAP
+                    if -0.45 <= deviation_pct <= -0.10:
+                        # Condition 2: Current price is higher than price 2 candles ago (recovering)
+                        r = session.get(
+                            f"{KRAKEN_URL}/0/public/OHLC?pair={s['kraken_ohlc']}&interval=1",
+                            timeout=30
+                        )
+                        data = r.json()
+                        if not data.get("error") and data["result"]:
+                            result = data["result"]
+                            key = [k for k in result.keys() if k != "last"][0]
+                            candles = result[key]
+                            
+                            if len(candles) >= 3:
+                                last_3_closes = [float(c[4]) for c in candles[-3:]]
+                                # Current price should be higher than price 2 candles ago
+                                if price > last_3_closes[0]:
+                                    # Condition 3: 5-min RSI is below 45
+                                    rsi_5m = get_rsi(s["kraken_ohlc"], symbol, 5)
+                                    if rsi_5m is not None and rsi_5m < 45:
+                                        # Condition 4: Market regime is NOT trending_down
+                                        if regime != 'trending_down':
+                                            # Condition 5: ML confidence > 0.55 (lower threshold)
+                                            # Prepare features for ML prediction
+                                            ml_rsi_temp = rsi if rsi is not None else 50
+                                            
+                                            # Get Bollinger distance
+                                            bb_dist = 0
+                                            try:
+                                                closes = [float(c[4]) for c in candles[-50:]]
+                                                lower_band, _, _ = calculate_bollinger_bands(closes)
+                                                if lower_band is not None:
+                                                    bb_dist = (price - lower_band) / lower_band * 100
+                                            except:
+                                                pass
+                                            
+                                            vol_ratio = get_volume_ratio(s["kraken_ohlc"], cfg["rsi_interval"])
+                                            
+                                            # Get ATR for ML feature
+                                            atr_val = get_atr(s["kraken_ohlc"], cfg["rsi_interval"])
+                                            
+                                            ml_confidence, _ = predict_trade_profit(
+                                                ml_rsi_temp, bb_dist, regime, vol_ratio, 
+                                                deviation_pct, atr_val if atr_val else 0, deviation_pct
+                                            )
+                                            
+                                            if ml_confidence > 0.55:
+                                                entry_signal = True
+                                                is_vwap_reversion = True
+                                                signal_reason = f"VWAP Reversion ${price:,.2f} | VWAP ${vwap:,.2f} | Deviation {deviation_pct:.2f}%"
+                                                ml_rsi = ml_rsi_temp
+                                                ml_bb_distance = bb_dist
+                                                ml_volume_ratio = vol_ratio
+                                                ml_vwap_distance = deviation_pct
+                                                ml_atr_value = atr_val if atr_val else 0
+                                                ml_vwap_deviation_pct = deviation_pct
+                                                log.info(f"🔄 [SCALP] VWAP Reversion entry triggered for {symbol}")
 
-            # Calculate ML features if entry signal detected
-            if entry_signal and strategy_name == "SCALP":
+            # Calculate ML features if entry signal detected (for Signal 1 & 2)
+            if entry_signal and strategy_name == "SCALP" and not is_vwap_reversion:
                 if ml_rsi is None:
                     ml_rsi = rsi if rsi is not None else 50
                 if ml_bb_distance is None:
@@ -1035,13 +1220,21 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                 # Get volume ratio
                 ml_volume_ratio = get_volume_ratio(s["kraken_ohlc"], cfg["rsi_interval"])
                 
+                # Get ATR for ML feature
+                ml_atr_value = get_atr(s["kraken_ohlc"], cfg["rsi_interval"])
+                if ml_atr_value is None:
+                    ml_atr_value = 0
+                
                 # If VWAP distance wasn't set (filter disabled or price above), set to 0
                 if ml_vwap_distance is None:
                     ml_vwap_distance = 0
                 
-                # ML prediction
+                ml_vwap_deviation_pct = 0  # Not a VWAP reversion entry
+                
+                # ML prediction with all 7 features
                 confidence, should_trade = predict_trade_profit(
-                    ml_rsi, ml_bb_distance, ml_regime, ml_volume_ratio, ml_vwap_distance
+                    ml_rsi, ml_bb_distance, ml_regime, ml_volume_ratio, 
+                    ml_vwap_distance, ml_atr_value, ml_vwap_deviation_pct
                 )
                 log.info(f"🤖 [{strategy_name}] {symbol} ML confidence: {confidence:.2%} (threshold: {ML_CONFIDENCE_THRESHOLD:.0%})")
                 
@@ -1051,16 +1244,16 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                 else:
                     signal_reason += f" | ML {confidence:.0%}"
 
-            # Trend filter
-            if entry_signal and strategy_name == "SCALP" and TREND_FILTER_ENABLED:
+            # Trend filter (only for Signal 1 & 2)
+            if entry_signal and strategy_name == "SCALP" and not is_vwap_reversion and TREND_FILTER_ENABLED:
                 if not price_above_ema(s["kraken_ohlc"], symbol, cfg["rsi_interval"], price):
                     log.info(f"⏳ [{strategy_name}] {symbol} signal blocked by trend filter (price below EMA)")
                     continue
                 else:
                     signal_reason += " | Trend up"
 
-            # Volume filter
-            if entry_signal and strategy_name == "SCALP" and VOLUME_FILTER_ENABLED:
+            # Volume filter (only for Signal 1 & 2)
+            if entry_signal and strategy_name == "SCALP" and not is_vwap_reversion and VOLUME_FILTER_ENABLED:
                 spike, curr_vol, avg_vol = volume_spike_detected(s["kraken_ohlc"], cfg["rsi_interval"])
                 if not spike:
                     log.info(f"⏳ [{strategy_name}] {symbol} signal blocked by volume filter (curr={curr_vol:.0f}, avg={avg_vol:.0f})")
@@ -1069,10 +1262,29 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                     signal_reason += f" | Volume spike ({curr_vol/avg_vol:.1f}x)"
 
             if entry_signal:
-                trade_size = cfg["trade_size"]
-                if regime == 'volatile' and REGIME_DETECTION_ENABLED:
-                    trade_size = int(trade_size * 0.5)
-                    log.info(f"[{strategy_name}] {symbol} volatile regime – reducing trade size to ${trade_size}")
+                # Get dynamic trade size based on ATR (Upgrade 2)
+                if strategy_name == "SCALP":
+                    atr_value = get_atr(s["kraken_ohlc"], cfg["rsi_interval"])
+                    base_trade_size = cfg["trade_size"]
+                    
+                    # Apply dynamic sizing
+                    if regime == 'volatile' and REGIME_DETECTION_ENABLED:
+                        # Volatile regime already reduces size to 50%
+                        base_trade_size = int(base_trade_size * 0.5)
+                    
+                    trade_size = get_dynamic_trade_size(base_trade_size, atr_value)
+                    
+                    # If VWAP reversion entry, reduce size by 30% (70% of normal)
+                    if is_vwap_reversion:
+                        trade_size = round(trade_size * 0.7)
+                        log.info(f"📐 [SCALP] ATR={atr_value:.0f} → trade size adjusted to ${trade_size} (VWAP Reversion 70%)")
+                    else:
+                        log.info(f"📐 [SCALP] ATR={atr_value:.0f} → trade size adjusted to ${trade_size}")
+                else:
+                    trade_size = cfg["trade_size"]
+                    if regime == 'volatile' and REGIME_DETECTION_ENABLED:
+                        trade_size = int(trade_size * 0.5)
+                        log.info(f"[{strategy_name}] {symbol} volatile regime – reducing trade size to ${trade_size}")
 
                 log.info(f"🎯 [{strategy_name}] BUY SIGNAL {symbol} | {signal_reason}")
                 if TRADING_MODE == "live":
@@ -1085,13 +1297,16 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                         fee = cost * KRAKEN_TAKER_FEE
                         total_cost = cost + fee
                         if scalp_balance < total_cost:
-                            log.warning(f"Insufficient scalp balance for {symbol} with reduced size")
+                            log.warning(f"Insufficient scalp balance for {symbol} with adjusted size")
                             continue
                         scalp_balance -= total_cost
-                        log.info(f"📄 ⚡ SCALP BUY {symbol} qty={qty} @ ${price:,.2f} (volatile size) | Cost: ${cost:.2f} | Fee: ${fee:.2f} | Scalp Balance: ${scalp_balance:,.2f}")
+                        log.info(f"📄 ⚡ SCALP BUY {symbol} qty={qty} @ ${price:,.2f} (adjusted size) | Cost: ${cost:.2f} | Fee: ${fee:.2f} | Scalp Balance: ${scalp_balance:,.2f}")
                         qty_actual = qty
                     else:
-                        qty_actual = buy_func(symbol, price)
+                        if strategy_name == "SCALP":
+                            qty_actual = paper_buy_scalp(symbol, price, trade_size)
+                        else:
+                            qty_actual = buy_func(symbol, price)
                         if qty_actual is None: continue
                 
                 # Store ML features with the trade for future training
@@ -1105,6 +1320,8 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                     trade_entry["regime"] = regime_to_int(ml_regime)
                     trade_entry["volume_ratio"] = ml_volume_ratio
                     trade_entry["vwap_distance"] = ml_vwap_distance
+                    trade_entry["atr_value"] = ml_atr_value if ml_atr_value is not None else get_atr(s["kraken_ohlc"], cfg["rsi_interval"])
+                    trade_entry["vwap_deviation_pct"] = ml_vwap_deviation_pct if ml_vwap_deviation_pct is not None else 0
                 
                 positions[symbol] = trade_entry
                 trades.append({
@@ -1117,7 +1334,9 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                     "bb_distance": ml_bb_distance if strategy_name == "SCALP" else None,
                     "regime": regime_to_int(ml_regime) if strategy_name == "SCALP" else None,
                     "volume_ratio": ml_volume_ratio if strategy_name == "SCALP" else None,
-                    "vwap_distance": ml_vwap_distance if strategy_name == "SCALP" else None
+                    "vwap_distance": ml_vwap_distance if strategy_name == "SCALP" else None,
+                    "atr_value": trade_entry.get("atr_value") if strategy_name == "SCALP" else None,
+                    "vwap_deviation_pct": trade_entry.get("vwap_deviation_pct") if strategy_name == "SCALP" else None
                 })
                 log.info(f"📈 [{strategy_name}] BUY {symbol} @ ${price:,.2f} (size: {qty_actual})")
                 break
@@ -1287,7 +1506,9 @@ if __name__ == "__main__":
     log.info(f"📱 Telegram hourly summaries: ENABLED")
     log.info(f"🔄 Reset endpoint: http://your-bot:8081/reset_paper")
     log.info(f"💰 Fee simulation: ON ({KRAKEN_TAKER_FEE:.2%} taker fee)")
-    send_telegram(f"🚀 <b>APEX BOT – BTC SCALP ONLY</b>\nRSI 20/80, $50 trades\n5m RSI gate <50\nVWAP filter: {'ON' if VWAP_FILTER_ENABLED else 'OFF'}\nDynamic adaptation ON\n🤖 ML Predictor: {'ON' if (ML_ENABLED and SKLEARN_AVAILABLE) else 'OFF'}\nFee simulation: ON ({KRAKEN_TAKER_FEE:.2%})\nHourly summaries")
+    log.info(f"📊 Technical libraries: pandas-ta ON | TA-Lib: {'ON' if TALIB_AVAILABLE else 'OFF'}")
+    log.info(f"📐 ATR dynamic sizing: ON | VWAP Reversion entry: ON | ML features: 7")
+    send_telegram(f"🚀 <b>APEX BOT – BTC SCALP ONLY</b>\nRSI 20/80, $50 trades\n5m RSI gate <50\nVWAP filter: {'ON' if VWAP_FILTER_ENABLED else 'OFF'}\nDynamic adaptation ON\n🤖 ML Predictor: {'ON' if (ML_ENABLED and SKLEARN_AVAILABLE) else 'OFF'}\nFee simulation: ON ({KRAKEN_TAKER_FEE:.2%})\nATR dynamic sizing: ON\nVWAP Reversion: ON\nHourly summaries")
 
     # Start command server
     start_command_server()
