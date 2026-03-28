@@ -577,9 +577,10 @@ def calculate_bollinger_bands(prices, period=20, std_dev=2):
         series = pd.Series(prices)
         bbands = ta.bbands(series, length=period, std=std_dev)
         if bbands is not None and not bbands.empty:
-            lower = bbands.iloc[-1]['BBL_20_2.0']
-            middle = bbands.iloc[-1]['BBM_20_2.0']
-            upper = bbands.iloc[-1]['BBU_20_2.0']
+            cols = bbands.columns.tolist()
+            lower = bbands.iloc[-1][cols[0]]
+            middle = bbands.iloc[-1][cols[1]]
+            upper = bbands.iloc[-1][cols[4]]
             return lower, middle, upper
         return None, None, None
     except Exception as e:
@@ -1274,12 +1275,15 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                     
                     trade_size = get_dynamic_trade_size(base_trade_size, atr_value)
                     
+                    # FIX 1: ATR None crash protection
+                    atr_display = f"{atr_value:.0f}" if atr_value is not None else "N/A"
+                    
                     # If VWAP reversion entry, reduce size by 30% (70% of normal)
                     if is_vwap_reversion:
                         trade_size = round(trade_size * 0.7)
-                        log.info(f"📐 [SCALP] ATR={atr_value:.0f} → trade size adjusted to ${trade_size} (VWAP Reversion 70%)")
+                        log.info(f"📐 [SCALP] ATR={atr_display} → trade size adjusted to ${trade_size} (VWAP Reversion 70%)")
                     else:
-                        log.info(f"📐 [SCALP] ATR={atr_value:.0f} → trade size adjusted to ${trade_size}")
+                        log.info(f"📐 [SCALP] ATR={atr_display} → trade size adjusted to ${trade_size}")
                 else:
                     trade_size = cfg["trade_size"]
                     if regime == 'volatile' and REGIME_DETECTION_ENABLED:
@@ -1290,6 +1294,8 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                 if TRADING_MODE == "live":
                     qty = round(trade_size / price, 6)
                     kraken_place_order(s["kraken_order"], "buy", qty)
+                    # FIX 2: qty_actual undefined in live mode
+                    qty_actual = qty
                 else:
                     if trade_size != cfg["trade_size"]:
                         qty = round(trade_size / price, 6)
