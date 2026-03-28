@@ -1025,6 +1025,8 @@ def run_exits(strategy_name, cfg, positions, trades, stats, sell_func):
 
 # ═══ ENTRY CHECKS ════════════════════════════════════════════════════════════
 def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
+    # FIX: Add global scalp_balance to fix scoping error
+    global scalp_balance
     total_positions = len(scalp_positions) + len(trend_positions)
     if total_positions >= MAX_POSITIONS:
         return
