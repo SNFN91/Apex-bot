@@ -1,5 +1,5 @@
 {
   "deploy": {
-    "startCommand": "python bot.py"
+    "startCommand": "python main.py"
   }
 }
