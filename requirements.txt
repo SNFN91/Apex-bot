@@ -1,4 +1,6 @@
 requests==2.31.0
 numpy==1.26.0
 scikit-learn==1.4.0
+pandas==2.2.0
 pandas-ta==0.3.14b0
+urllib3==2.2.0
