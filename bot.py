@@ -208,8 +208,8 @@ STRATEGIES = {
         "rsi_interval": 1,
         "rsi_buy": current_rsi_buy,          # dynamic
         "rsi_sell": 80,                       # ⬅️ changed to 80
-        "tp": 0.01,
-        "sl": 0.003,
+        "tp": 0.015,                          # UPDATED: 1.5% take profit
+        "sl": 0.006,                          # UPDATED: 0.6% stop loss
         "trade_size": 50,                      # ⬅️ reduced to $50 temporarily
         "max_hold_hours": 1,
         "label": "⚡ Scalping",
@@ -1498,7 +1498,7 @@ def bot_tick():
 # ═══ MAIN ════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info(f"⚡📈 APEX BOT – BTC SCALP ONLY, RSI 20/80, $50 TRADE SIZE")
-    log.info(f"⚡ SCALP: BTC only, RSI({RSI_PERIOD}) Buy<{current_rsi_buy} OR Bollinger | 5m RSI gate <50 | VWAP filter: {'ON' if VWAP_FILTER_ENABLED else 'OFF'} | Sell>80 TP1% SL0.3% | Time exit 1h | Trend filter: {TREND_FILTER_ENABLED}")
+    log.info(f"⚡ SCALP: BTC only, RSI({RSI_PERIOD}) Buy<{current_rsi_buy} OR Bollinger | 5m RSI gate <50 | VWAP filter: {'ON' if VWAP_FILTER_ENABLED else 'OFF'} | Sell>80 TP1.5% SL0.6% | Time exit 1h | Trend filter: {TREND_FILTER_ENABLED}")
     if REGIME_DETECTION_ENABLED:
         log.info(f"🧠 Market regime detection: ON")
     if DYNAMIC_RSI_ENABLED:
