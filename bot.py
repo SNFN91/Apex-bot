@@ -38,6 +38,8 @@ KRAKEN_TAKER_FEE  = 0.0026  # 0.26% taker fee for fee simulation
 # ═══ SAFETY FEATURES ══════════════════════════════════════════════════════════
 MAX_DAILY_LOSS = 10.0
 DAILY_PROFIT_TARGET = 50.0
+DAILY_LOSS_PCT_LIMIT = 0.03          # Stop trading if down 3% on the day (Fix 4)
+DAILY_PROFIT_PCT_TARGET = 0.02       # Halve position size if up 2% on the day (Fix 5)
 daily_loss = 0.0
 daily_profit = 0.0
 last_reset_day = None
@@ -178,7 +180,8 @@ def train_ml_model():
 
 def predict_trade_profit(rsi_value, bb_distance, regime_str, volume_ratio, vwap_distance, atr_value=0, vwap_deviation_pct=0):
     """Predict if trade will be profitable. Returns (confidence, should_trade)."""
-    if not ML_ENABLED or not SKLEARN_AVAILABLE or not ml_trained:
+    # FIX 1: add ml_scaler is None guard
+    if not ML_ENABLED or not SKLEARN_AVAILABLE or not ml_trained or ml_scaler is None:
         return 0.5, True  # Default: allow trade if ML not ready
     
     try:
@@ -201,6 +204,65 @@ def predict_trade_profit(rsi_value, bb_distance, regime_str, volume_ratio, vwap_
 # ═══ HOURLY TELEGRAM SUMMARY (PHASE 2) ═══════════════════════════════════════
 last_hour_summary = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
 hourly_trades = []
+
+def check_hourly_summary():
+    global last_hour_summary
+    now = datetime.now(timezone.utc)
+    current_hour = now.replace(minute=0, second=0, microsecond=0)
+    if current_hour > last_hour_summary:
+        send_hourly_summary()
+        last_hour_summary = current_hour
+
+# FIX 2: Add trading session filter
+def is_valid_trading_session():
+    hour = datetime.now(timezone.utc).hour
+    london_open = 7 <= hour <= 12
+    ny_open = 13 <= hour <= 17
+    return london_open or ny_open
+
+# FIX 3: Fee‑aware risk‑reward gate
+def trade_is_fee_viable(tp, sl):
+    round_trip_fee = KRAKEN_TAKER_FEE * 2  # 0.52%
+    net_reward = tp - round_trip_fee
+    net_risk = sl + round_trip_fee
+    if net_risk == 0:
+        return False
+    rr_ratio = net_reward / net_risk
+    # FIX: updated threshold from 1.5 to 0.8
+    return rr_ratio >= 0.8
+
+# FIX 5: Profit scale‑down multiplier
+def get_profit_scale_multiplier():
+    starting_balance = 20000.0
+    total_balance = scalp_balance + trend_balance
+    daily_pnl_pct = (total_balance - starting_balance) / starting_balance
+    if daily_pnl_pct >= DAILY_PROFIT_PCT_TARGET:
+        log.info(f"✅ Daily profit target hit ({daily_pnl_pct:.2%}) – reducing position size to 50%")
+        return 0.5
+    return 1.0
+
+def send_hourly_summary():
+    """Send a summary of the last hour's trading activity."""
+    global hourly_trades, last_hour_summary
+    if not hourly_trades:
+        return
+    total_trades = len(hourly_trades)
+    wins = sum(1 for t in hourly_trades if t['pnl'] > 0)
+    losses = sum(1 for t in hourly_trades if t['pnl'] < 0)
+    net_pnl = sum(t['pnl'] for t in hourly_trades)
+    win_rate = (wins / total_trades * 100) if total_trades else 0
+    ml_status = "Active" if ml_trained else f"Training ({len(scalp_trades)}/{ML_MIN_TRADES})"
+    message = (
+        f"📊 <b>Hourly Summary</b>\n"
+        f"Trades: {total_trades} | Wins: {wins} | Losses: {losses}\n"
+        f"Net P&L: ${net_pnl:.2f}\n"
+        f"Win Rate: {win_rate:.1f}%\n"
+        f"Open positions: {len(scalp_positions) + len(trend_positions)}\n"
+        f"Current RSI buy: {current_rsi_buy}\n"
+        f"🤖 ML: {ml_status}"
+    )
+    send_telegram(message)
+    hourly_trades = []
 
 # ═══ DUAL STRATEGY CONFIG – Scalp only BTC, Trend both ═══════════════════════
 STRATEGIES = {
@@ -370,38 +432,6 @@ def send_telegram(message):
     except Exception as e:
         log.error(f"Telegram error: {e}")
 
-def send_hourly_summary():
-    """Send a summary of the last hour's trading activity."""
-    global hourly_trades, last_hour_summary
-    if not hourly_trades:
-        return
-    total_trades = len(hourly_trades)
-    wins = sum(1 for t in hourly_trades if t['pnl'] > 0)
-    losses = sum(1 for t in hourly_trades if t['pnl'] < 0)
-    net_pnl = sum(t['pnl'] for t in hourly_trades)
-    win_rate = (wins / total_trades * 100) if total_trades else 0
-    ml_status = "Active" if ml_trained else f"Training ({len(scalp_trades)}/{ML_MIN_TRADES})"
-    message = (
-        f"📊 <b>Hourly Summary</b>\n"
-        f"Trades: {total_trades} | Wins: {wins} | Losses: {losses}\n"
-        f"Net P&L: ${net_pnl:.2f}\n"
-        f"Win Rate: {win_rate:.1f}%\n"
-        f"Open positions: {len(scalp_positions) + len(trend_positions)}\n"
-        f"Current RSI buy: {current_rsi_buy}\n"
-        f"🤖 ML: {ml_status}"
-    )
-    send_telegram(message)
-    hourly_trades = []
-
-def check_hourly_summary():
-    global last_hour_summary
-    now = datetime.now(timezone.utc)
-    current_hour = now.replace(minute=0, second=0, microsecond=0)
-    if current_hour > last_hour_summary:
-        send_hourly_summary()
-        last_hour_summary = current_hour
-
-# ═══ DYNAMIC RSI ADAPTATION ══════════════════════════════════════════════════
 def update_rsi_performance(trade):
     global rsi_performance, rsi_adapt_counter, current_rsi_buy
     rsi_val = trade.get('rsi_buy_used')
@@ -461,6 +491,16 @@ def check_safety_limits_basic():
         log.warning(f"🛑 Daily loss limit reached (${total_today_loss:.2f} > ${MAX_DAILY_LOSS}) – stopping trades")
         send_telegram(f"⚠️ <b>Daily loss limit reached</b>\nLoss: ${total_today_loss:.2f}\nTrading paused until midnight")
         return False
+    
+    # FIX 4: Daily loss kill switch based on percentage
+    starting_balance = 20000.0  # approximate starting total
+    total_balance = scalp_balance + trend_balance
+    daily_pnl_pct = (total_balance - starting_balance) / starting_balance
+    if daily_pnl_pct <= -DAILY_LOSS_PCT_LIMIT:
+        log.warning(f"⛔ Daily loss limit hit ({daily_pnl_pct:.2%}) – trading paused")
+        send_telegram(f"⛔ <b>Daily loss kill switch triggered</b>\nDown {daily_pnl_pct:.2%} today\nTrading paused")
+        return False
+    
     return True
 
 # ═══ CLOSE ALL POSITIONS ═════════════════════════════════════════════════════
@@ -1030,6 +1070,11 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
     total_positions = len(scalp_positions) + len(trend_positions)
     if total_positions >= MAX_POSITIONS:
         return
+    
+    # FIX 2: Trading session filter
+    if not is_valid_trading_session():
+        log.info(f"⏰ Outside trading session (London 07-12 UTC / NY 13-17 UTC) – no new entries")
+        return
 
     for s in SYMBOLS:
         symbol = s["symbol"]
@@ -1265,6 +1310,12 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                     signal_reason += f" | Volume spike ({curr_vol/avg_vol:.1f}x)"
 
             if entry_signal:
+                # FIX 3: Fee-aware risk-reward gate for scalp
+                if strategy_name == "SCALP":
+                    if not trade_is_fee_viable(cfg["tp"], cfg["sl"]):
+                        log.info(f"⏳ [{strategy_name}] {symbol} trade not fee-viable – skipping")
+                        continue
+                
                 # Get dynamic trade size based on ATR (Upgrade 2)
                 if strategy_name == "SCALP":
                     atr_value = get_atr(s["kraken_ohlc"], cfg["rsi_interval"])
@@ -1274,6 +1325,9 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                     if regime == 'volatile' and REGIME_DETECTION_ENABLED:
                         # Volatile regime already reduces size to 50%
                         base_trade_size = int(base_trade_size * 0.5)
+                    
+                    # FIX 5: Profit scale‑down multiplier
+                    base_trade_size = int(base_trade_size * get_profit_scale_multiplier())
                     
                     trade_size = get_dynamic_trade_size(base_trade_size, atr_value)
                     
