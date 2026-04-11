@@ -1161,17 +1161,7 @@ def run_entries(strategy_name, cfg, positions, trades, stats, buy_func):
                     ml_vwap_distance = (price - vwap) / vwap * 100
 
             # === 5-MINUTE RSI CONFIRMATION FOR SCALP (Signal 1 & 2) ===
-            if entry_signal and strategy_name == "SCALP" and not is_vwap_reversion:
-                rsi_5m = get_rsi(s["kraken_ohlc"], symbol, 5)  # 5‑minute interval
-                if rsi_5m is None:
-                    log.warning(f"⚠️ [{strategy_name}] {symbol} 5‑min RSI unavailable – skipping entry")
-                    continue
-                
-                if rsi_5m >= 50:
-                    log.info(f"⏳ [{strategy_name}] {symbol} blocked by 5‑min RSI ({rsi_5m:.1f} >= 50) – higher timeframe not confirmed")
-                    continue
-                else:
-                    signal_reason += f" | 5m RSI {rsi_5m:.1f}"
+            # REMOVED – no longer used
 
             # === SIGNAL 3: VWAP REVERSION ENTRY (Upgrade 3) ===
             if strategy_name == "SCALP" and not entry_signal and symbol == "BTC":
