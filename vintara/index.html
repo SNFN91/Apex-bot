@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Retro Vintara — The Signal Never Died</title>
+  <meta name="description" content="Premium 70s–90s cartoon apparel &amp; nostalgic merch. Wear the memories that made you. Limited drops, numbered editions."/>
+  <meta property="og:title" content="Retro Vintara — The Signal Never Died"/>
+  <meta property="og:description" content="Wear the memories that made you. Limited retro drops."/>
+  <meta property="og:type" content="website"/>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Orbitron:wght@700;900&family=Space+Grotesk:wght@400;600;700&family=DM+Sans:ital,wght@0,400;0,500;1,400&family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet"/>
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="css/animations.css"/>
+  <link rel="stylesheet" href="css/style.css"/>
+</head>
+<body>
+
+  <!-- ========================================================
+       HEADER
+       ======================================================== -->
+  <header class="site-header" id="siteHeader">
+    <div class="header-inner">
+
+      <a href="#" class="logo" aria-label="Retro Vintara — Home">
+        <span class="logo-pixel">▓▓</span>
+        <span class="logo-text">RETRO VINTARA</span>
+        <span class="logo-pixel">▓▓</span>
+      </a>
+
+      <nav class="main-nav" id="mainNav" aria-label="Primary navigation">
+        <a href="#drops"  class="nav-link">SIGNALS</a>
+        <a href="#vault"  class="nav-link">VAULT</a>
+        <a href="#drops"  class="nav-link">DROPS</a>
+        <a href="#about"  class="nav-link">ABOUT</a>
+        <a href="#club"   class="nav-link">CLUB</a>
+      </nav>
+
+      <div class="header-actions">
+        <button class="icon-btn" aria-label="Search">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="square">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </button>
+        <button class="icon-btn cart-btn" aria-label="Shopping cart">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="square">
+            <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
+            <line x1="3" y1="6" x2="21" y2="6"/>
+            <path d="M16 10a4 4 0 01-8 0"/>
+          </svg>
+          <span class="cart-count">0</span>
+        </button>
+        <button class="hamburger" id="hamburger" aria-label="Toggle menu" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- ========================================================
+       HERO
+       ======================================================== -->
+  <section class="hero" id="hero" aria-label="Hero">
+
+    <!-- Background layers (decorative) -->
+    <div class="hero-bg" aria-hidden="true">
+      <div class="hero-glow"></div>
+      <div class="neon-grid"></div>
+      <div class="hero-grain"></div>
+      <div class="scanlines"></div>
+    </div>
+
+    <!-- Main content -->
+    <div class="hero-content">
+      <p class="hero-label">// BROADCASTING LIVE FROM 1987</p>
+      <h1 class="hero-headline">
+        <span class="headline-line">THE SIGNAL</span>
+        <span class="headline-line glow-teal">NEVER DIED.</span>
+      </h1>
+      <p class="hero-sub">Wear the memories that made you.</p>
+      <div class="hero-ctas">
+        <a href="#drops" class="btn btn-primary">TUNE IN &rarr;</a>
+        <a href="#vault" class="btn btn-outline">EXPLORE THE VAULT</a>
+      </div>
+    </div>
+
+    <!-- Audio toggle -->
+    <button class="audio-toggle" id="audioToggle" aria-label="Toggle ambient audio">
+      <svg class="audio-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square">
+        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+        <path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/>
+      </svg>
+      <span class="audio-label">AMBIENT</span>
+    </button>
+
+    <!-- Scroll hint -->
+    <div class="scroll-hint" aria-hidden="true">
+      <span>SCROLL</span>
+      <div class="scroll-line"></div>
+    </div>
+
+  </section>
+
+  <!-- ========================================================
+       BROADCAST TICKER
+       ======================================================== -->
+  <div class="broadcast-ticker" role="marquee" aria-label="Announcements">
+    <div class="ticker-track" aria-hidden="true">
+      <span class="ticker-item">⚡ SIGNAL INCOMING — NEW DROP FRI MAY 22</span>
+      <span class="ticker-sep">▸</span>
+      <span class="ticker-item">FREE SHIPPING ON ORDERS $50+</span>
+      <span class="ticker-sep">▸</span>
+      <span class="ticker-item">RETRO CLUB MEMBERS GET EARLY ACCESS</span>
+      <span class="ticker-sep">▸</span>
+      <span class="ticker-item">EDITION 003 — SATURDAY MORNING — NOW LIVE</span>
+      <span class="ticker-sep">▸</span>
+      <span class="ticker-item">147 UNITS REMAINING THIS DROP</span>
+      <span class="ticker-sep">▸</span>
+      <!-- duplicate for seamless loop -->
+      <span class="ticker-item">⚡ SIGNAL INCOMING — NEW DROP FRI MAY 22</span>
+      <span class="ticker-sep">▸</span>
+      <span class="ticker-item">FREE SHIPPING ON ORDERS $50+</span>
+      <span class="ticker-sep">▸</span>
+      <span class="ticker-item">RETRO CLUB MEMBERS GET EARLY ACCESS</span>
+      <span class="ticker-sep">▸</span>
+      <span class="ticker-item">EDITION 003 — SATURDAY MORNING — NOW LIVE</span>
+      <span class="ticker-sep">▸</span>
+      <span class="ticker-item">147 UNITS REMAINING THIS DROP</span>
+      <span class="ticker-sep">▸</span>
+    </div>
+  </div>
+
+  <!-- ========================================================
+       STORY BLOCK
+       ======================================================== -->
+  <section class="story-block" id="about" aria-labelledby="story-heading">
+    <div class="story-inner container">
+
+      <!-- Retro TV frame -->
+      <div class="story-tv reveal">
+        <div class="tv-frame" aria-hidden="true">
+          <div class="tv-screen">
+            <div class="tv-content">
+              <div class="tv-static-art"></div>
+            </div>
+            <div class="tv-scanlines"></div>
+            <div class="tv-glare"></div>
+          </div>
+          <div class="tv-label">&#9679; CH 04 — VINTARA TV</div>
+          <div class="tv-knobs">
+            <div class="tv-knob"></div>
+            <div class="tv-knob"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Brand copy -->
+      <div class="story-copy reveal reveal-delay-2">
+        <span class="section-label">// THE VINTARA TRANSMISSIONS</span>
+        <h2 class="story-headline" id="story-heading">
+          BEFORE PLAYLISTS,<br/>THERE WERE MIXTAPES.
+        </h2>
+        <p class="story-text">
+          Before the algorithm chose for you — <em>you chose</em>.
+        </p>
+        <p class="story-text">
+          Every Saturday morning cartoon. Every quarter dropped to an arcade machine.
+          Every cassette tape labeled in your own handwriting. Those signals
+          shaped you more than anything that came after.
+        </p>
+        <p class="story-text">
+          We build for the ones who remember — and who aren't done feeling it.
+        </p>
+        <a href="#about" class="btn btn-ghost">READ THE FULL STORY &rarr;</a>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ========================================================
+       FEATURED SIGNAL DROPS
+       ======================================================== -->
+  <section class="signal-drops" id="drops" aria-labelledby="drops-heading">
+    <div class="container">
+
+      <div class="drops-header reveal">
+        <div class="pixel-divider"></div>
+        <div class="drops-title-row">
+          <div>
+            <span class="section-label">// LIMITED EDITION</span>
+            <h2 class="section-headline" id="drops-heading">SIGNAL 003 — "SATURDAY MORNING"</h2>
+          </div>
+          <div class="countdown-block" id="countdown" aria-label="Countdown to drop end">
+            <p class="countdown-label">DROP CLOSES IN</p>
+            <div class="countdown-digits">
+              <div class="digit-group">
+                <span class="digit" id="cd-days">06</span>
+                <span class="digit-unit">D</span>
+              </div>
+              <span class="digit-sep" aria-hidden="true">:</span>
+              <div class="digit-group">
+                <span class="digit" id="cd-hours">12</span>
+                <span class="digit-unit">H</span>
+              </div>
+              <span class="digit-sep" aria-hidden="true">:</span>
+              <div class="digit-group">
+                <span class="digit" id="cd-mins">00</span>
+                <span class="digit-unit">M</span>
+              </div>
+              <span class="digit-sep" aria-hidden="true">:</span>
+              <div class="digit-group">
+                <span class="digit" id="cd-secs">00</span>
+                <span class="digit-unit">S</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="products-grid products-grid--3">
+
+        <!-- Product 1: Thunder Grid Hoodie -->
+        <article class="product-card reveal reveal-delay-1" aria-label="Thunder Grid Hoodie">
+          <div class="card-badges">
+            <span class="badge badge-limited">UNIT 089/200</span>
+          </div>
+          <div class="card-image">
+            <div class="product-art product-art--1" role="img" aria-label="Thunder Grid Hoodie artwork"></div>
+            <div class="card-scanlines" aria-hidden="true"></div>
+            <div class="card-hover-overlay" aria-hidden="true">
+              <a href="#" class="quick-view">QUICK VIEW</a>
+            </div>
+          </div>
+          <div class="card-info">
+            <p class="card-era">80s — Apparel</p>
+            <h3 class="card-name">Thunder Grid Hoodie</h3>
+            <p class="card-price">$58.00</p>
+            <div class="card-stock-bar" role="progressbar" aria-valuenow="44" aria-valuemin="0" aria-valuemax="100" aria-label="44% sold">
+              <div class="stock-fill" style="width:44%"></div>
+            </div>
+            <button class="btn btn-primary btn-full">CLAIM YOUR SIGNAL &rarr;</button>
+          </div>
+        </article>
+
+        <!-- Product 2: Saturday Morning Tee -->
+        <article class="product-card product-card--featured reveal reveal-delay-2" aria-label="Saturday Morning Tee">
+          <div class="card-badges">
+            <span class="badge badge-best">&#9733; BESTSIGNAL</span>
+          </div>
+          <div class="card-image">
+            <div class="product-art product-art--2" role="img" aria-label="Saturday Morning Tee artwork"></div>
+            <div class="card-scanlines" aria-hidden="true"></div>
+            <div class="card-hover-overlay" aria-hidden="true">
+              <a href="#" class="quick-view">QUICK VIEW</a>
+            </div>
+          </div>
+          <div class="card-info">
+            <p class="card-era">90s — Apparel</p>
+            <h3 class="card-name">Saturday Morning Tee</h3>
+            <p class="card-price">$35.00</p>
+            <div class="card-stock-bar" role="progressbar" aria-valuenow="67" aria-valuemin="0" aria-valuemax="100" aria-label="67% sold">
+              <div class="stock-fill" style="width:67%"></div>
+            </div>
+            <button class="btn btn-primary btn-full">CLAIM YOUR SIGNAL &rarr;</button>
+          </div>
+        </article>
+
+        <!-- Product 3: VHS Dreams Jacket -->
+        <article class="product-card reveal reveal-delay-3" aria-label="VHS Dreams Jacket">
+          <div class="card-badges">
+            <span class="badge badge-new">NEW DROP</span>
+          </div>
+          <div class="card-image">
+            <div class="product-art product-art--3" role="img" aria-label="VHS Dreams Jacket artwork"></div>
+            <div class="card-scanlines" aria-hidden="true"></div>
+            <div class="card-hover-overlay" aria-hidden="true">
+              <a href="#" class="quick-view">QUICK VIEW</a>
+            </div>
+          </div>
+          <div class="card-info">
+            <p class="card-era">80s — Outerwear</p>
+            <h3 class="card-name">VHS Dreams Jacket</h3>
+            <p class="card-price">$78.00</p>
+            <div class="card-stock-bar" role="progressbar" aria-valuenow="23" aria-valuemin="0" aria-valuemax="100" aria-label="23% sold">
+              <div class="stock-fill" style="width:23%"></div>
+            </div>
+            <button class="btn btn-primary btn-full">CLAIM YOUR SIGNAL &rarr;</button>
+          </div>
+        </article>
+
+      </div>
+
+      <div class="section-cta reveal">
+        <a href="#vault" class="btn btn-outline">VIEW ALL SIGNALS &rarr;</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================================================
+       ARCADE VAULT
+       ======================================================== -->
+  <section class="arcade-vault" id="vault" aria-labelledby="vault-heading">
+    <div class="container">
+
+      <span class="section-label reveal">// BROWSE THE COLLECTION</span>
+      <h2 class="section-headline reveal" id="vault-heading">ENTER THE VAULT — SELECT YOUR ERA</h2>
+
+      <div class="decade-tabs reveal" role="tablist" aria-label="Decade selector">
+        <button class="decade-tab active" data-decade="80s" role="tab" aria-selected="true"  aria-controls="grid-80s">&#9619; 80s &#9619;</button>
+        <button class="decade-tab"        data-decade="70s" role="tab" aria-selected="false" aria-controls="grid-70s">&#9619; 70s &#9619;</button>
+        <button class="decade-tab"        data-decade="90s" role="tab" aria-selected="false" aria-controls="grid-90s">&#9619; 90s &#9619;</button>
+        <button class="decade-tab"        data-decade="00s" role="tab" aria-selected="false" aria-controls="grid-00s">&#9619; 00s &#9619;</button>
+      </div>
+
+      <!-- 80s -->
+      <div class="vault-grid active" id="grid-80s" role="tabpanel">
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--4"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">80s — Apparel</p>
+            <h3 class="card-name">Arcade Phoenix Tee</h3>
+            <p class="card-price">$32.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--5"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">80s — Outerwear</p>
+            <h3 class="card-name">Neon Blocker Jacket</h3>
+            <p class="card-price">$65.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--6"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">80s — Accessories</p>
+            <h3 class="card-name">CRT Dreams Cap</h3>
+            <p class="card-price">$28.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--1"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">80s — Apparel</p>
+            <h3 class="card-name">Thunder Grid Hoodie</h3>
+            <p class="card-price">$58.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+      </div>
+
+      <!-- 70s -->
+      <div class="vault-grid" id="grid-70s" role="tabpanel">
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--7"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">70s — Apparel</p>
+            <h3 class="card-name">Disco Flux Tee</h3>
+            <p class="card-price">$30.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--8"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">70s — Apparel</p>
+            <h3 class="card-name">Groovy Signal Hoodie</h3>
+            <p class="card-price">$52.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--9"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">70s — Accessories</p>
+            <h3 class="card-name">Lava Lamp Print Bag</h3>
+            <p class="card-price">$24.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--10"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">70s — Outerwear</p>
+            <h3 class="card-name">Funk Wave Jacket</h3>
+            <p class="card-price">$70.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+      </div>
+
+      <!-- 90s -->
+      <div class="vault-grid" id="grid-90s" role="tabpanel">
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--11"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">90s — Apparel</p>
+            <h3 class="card-name">Static Head Tee</h3>
+            <p class="card-price">$33.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--2"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">90s — Apparel</p>
+            <h3 class="card-name">Grunge Signal Hoodie</h3>
+            <p class="card-price">$55.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--12"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">90s — Accessories</p>
+            <h3 class="card-name">Pixel Rage Cap</h3>
+            <p class="card-price">$26.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--3"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">90s — Outerwear</p>
+            <h3 class="card-name">VHS Memories Jacket</h3>
+            <p class="card-price">$72.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+      </div>
+
+      <!-- 00s -->
+      <div class="vault-grid" id="grid-00s" role="tabpanel">
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--13"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">00s — Apparel</p>
+            <h3 class="card-name">Y2K Circuit Tee</h3>
+            <p class="card-price">$34.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--14"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">00s — Apparel</p>
+            <h3 class="card-name">Millennium Hoodie</h3>
+            <p class="card-price">$56.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--6"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">00s — Accessories</p>
+            <h3 class="card-name">Digital Dreams Bag</h3>
+            <p class="card-price">$22.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+        <article class="product-card product-card--sm">
+          <div class="card-image"><div class="product-art product-art--15"></div><div class="card-scanlines" aria-hidden="true"></div></div>
+          <div class="card-info">
+            <p class="card-era">00s — Outerwear</p>
+            <h3 class="card-name">Zone Runner Jacket</h3>
+            <p class="card-price">$68.00</p>
+            <button class="btn btn-primary btn-full btn-sm">CLAIM &rarr;</button>
+          </div>
+        </article>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ========================================================
+       SIGNAL WALL (UGC / Reviews)
+       ======================================================== -->
+  <section class="signal-wall" aria-labelledby="reviews-heading">
+    <div class="container">
+
+      <span class="section-label reveal">// COMMUNITY</span>
+      <h2 class="section-headline reveal" id="reviews-heading">THE SIGNAL IS SPREADING</h2>
+
+      <div class="reviews-grid">
+
+        <div class="review-card reveal reveal-delay-1">
+          <div class="vhs-frame">
+            <div class="vhs-rec" aria-hidden="true">REC</div>
+            <div class="review-stars" aria-label="5 stars">&#9733;&#9733;&#9733;&#9733;&#9733;</div>
+            <p class="review-text">"This hoodie is a time machine. Wore it to a retro gaming convention and three people asked where I got it. Answered: 'The signal.'"</p>
+            <p class="review-author">— @arcadeborn_1987</p>
+            <div class="review-meta">
+              <span class="badge badge-verify">VERIFIED PURCHASE</span>
+              <span>SIZE: L</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="review-card review-card--large reveal reveal-delay-2">
+          <div class="vhs-frame">
+            <div class="vhs-rec" aria-hidden="true">REC</div>
+            <div class="review-stars" aria-label="5 stars">&#9733;&#9733;&#9733;&#9733;&#9733;</div>
+            <p class="review-text">"I bought the Saturday Morning Tee and literally cried a little. Not in a sad way — in the way you feel when something perfectly captures a whole era of your childhood in one image. This brand gets it."</p>
+            <p class="review-author">— @staticwave_cartoons</p>
+            <div class="review-meta">
+              <span class="badge badge-verify">VERIFIED PURCHASE</span>
+              <span>SIZE: M</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="review-card reveal reveal-delay-3">
+          <div class="vhs-frame">
+            <div class="vhs-rec" aria-hidden="true">REC</div>
+            <div class="review-stars" aria-label="5 stars">&#9733;&#9733;&#9733;&#9733;&#9733;</div>
+            <p class="review-text">"Quality is insane for the price. The VHS Dreams Jacket is thick, the print is perfect, and the numbered tag inside makes it feel actually collectible."</p>
+            <p class="review-author">— @neon_grid_kid</p>
+            <div class="review-meta">
+              <span class="badge badge-verify">VERIFIED PURCHASE</span>
+              <span>SIZE: XL</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="review-card reveal reveal-delay-2">
+          <div class="vhs-frame">
+            <div class="vhs-rec" aria-hidden="true">REC</div>
+            <div class="review-stars" aria-label="5 stars">&#9733;&#9733;&#9733;&#9733;&#9733;</div>
+            <p class="review-text">"Finally a brand that gets it. Not nostalgic in a cheap way — actually nostalgic. The story behind each piece makes you feel part of something."</p>
+            <p class="review-author">— @retro_frequency</p>
+            <div class="review-meta">
+              <span class="badge badge-verify">VERIFIED PURCHASE</span>
+              <span>SIZE: S</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="ugc-cta reveal">
+        <p class="ugc-tag">SHARE YOUR SIGNAL</p>
+        <a href="#" class="hashtag-btn">#VINTARASIGNAL</a>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ========================================================
+       RETRO CLUB (Email Capture)
+       ======================================================== -->
+  <section class="retro-club" id="club" aria-labelledby="club-heading">
+    <div class="club-static-bg" aria-hidden="true"></div>
+    <div class="container">
+
+      <div class="os-window reveal">
+        <!-- OS title bar -->
+        <div class="os-titlebar" aria-hidden="true">
+          <div class="os-dots">
+            <span class="os-dot"></span>
+            <span class="os-dot"></span>
+            <span class="os-dot"></span>
+          </div>
+          <span class="os-title">INCOMING TRANSMISSION — VINTARA SIGNAL</span>
+        </div>
+
+        <!-- OS content -->
+        <div class="os-content">
+          <span class="section-label">// MEMBERS ONLY</span>
+          <h2 class="club-headline" id="club-heading">
+            JOIN THE<br/>RETRO CLUB.
+          </h2>
+          <p class="club-sub">
+            Early access to drops. Members-only signals.<br/>
+            The past, delivered to your future.
+          </p>
+
+          <form class="club-form" id="clubForm" novalidate>
+            <div class="form-row">
+              <label for="clubEmail" class="sr-only">Your email address</label>
+              <input
+                type="email"
+                id="clubEmail"
+                class="club-input"
+                placeholder="YOUR EMAIL ADDRESS"
+                required
+                autocomplete="email"
+              />
+              <button type="submit" class="btn btn-primary">TUNE IN &rarr;</button>
+            </div>
+            <p class="form-note">No spam. First access to limited drops. Unsubscribe any time.</p>
+          </form>
+
+          <div class="form-success" id="formSuccess" role="alert">
+            ⚡ SIGNAL RECEIVED. WELCOME TO THE CLUB.
+          </div>
+
+          <div class="club-perks">
+            <div class="perk">⚡ EARLY DROP ACCESS</div>
+            <div class="perk">&#127918; MEMBERS-ONLY SIGNALS</div>
+            <div class="perk">&#127873; SURPRISE TRANSMISSIONS</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ========================================================
+       FOOTER
+       ======================================================== -->
+  <footer class="broadcast-footer">
+    <div class="footer-grid-bg" aria-hidden="true"></div>
+    <div class="container">
+
+      <div class="footer-top">
+
+        <!-- Brand column -->
+        <div class="footer-brand">
+          <a href="#" class="logo logo--footer" aria-label="Retro Vintara — Home">
+            <span class="logo-pixel">▓▓</span>
+            <span class="logo-text">RETRO VINTARA</span>
+            <span class="logo-pixel">▓▓</span>
+          </a>
+          <p class="footer-tagline">"The signal never died."</p>
+          <nav class="social-row" aria-label="Social media">
+            <a href="#" class="social-icon" aria-label="Instagram">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square">
+                <rect x="2" y="2" width="20" height="20" rx="5"/>
+                <path d="M16 11.37A4 4 0 1112.63 8 4 4 0 0116 11.37z"/>
+                <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"/>
+              </svg>
+            </a>
+            <a href="#" class="social-icon" aria-label="TikTok">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1V9.01a6.33 6.33 0 00-.79-.05 6.34 6.34 0 00-6.34 6.34 6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.33-6.34V8.95a8.16 8.16 0 004.77 1.52V7.01a4.85 4.85 0 01-1-.32z"/>
+              </svg>
+            </a>
+            <a href="#" class="social-icon" aria-label="YouTube">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square">
+                <path d="M22.54 6.42a2.78 2.78 0 00-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46a2.78 2.78 0 00-1.95 1.96A29 29 0 001 12a29 29 0 00.46 5.58A2.78 2.78 0 003.41 19.6C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 001.95-1.95A29 29 0 0023 12a29 29 0 00-.46-5.58z"/>
+                <polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02"/>
+              </svg>
+            </a>
+            <a href="#" class="social-icon" aria-label="Pinterest">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square">
+                <path d="M12 2C6.48 2 2 6.48 2 12c0 4.24 2.65 7.86 6.39 9.29-.09-.78-.17-1.98.04-2.83.18-.76 1.22-5.17 1.22-5.17s-.31-.62-.31-1.54c0-1.45.84-2.53 1.88-2.53.89 0 1.32.67 1.32 1.47 0 .9-.57 2.23-.87 3.47-.25 1.03.52 1.87 1.53 1.87 1.84 0 3.08-2.37 3.08-5.18 0-2.14-1.44-3.76-4.04-3.76-2.95 0-4.77 2.2-4.77 4.65 0 .84.24 1.44.62 1.9.17.2.19.28.13.51-.04.17-.14.57-.18.73-.06.24-.24.32-.44.23-1.24-.51-1.82-1.88-1.82-3.42 0-2.54 2.14-5.6 6.39-5.6 3.42 0 5.66 2.48 5.66 5.14 0 3.53-1.96 6.17-4.84 6.17-.97 0-1.88-.52-2.19-1.11l-.61 2.32c-.19.73-.72 1.63-1.1 2.18.89.27 1.82.42 2.79.42 5.52 0 10-4.48 10-10S17.52 2 12 2z"/>
+              </svg>
+            </a>
+          </nav>
+        </div>
+
+        <!-- Link columns -->
+        <nav class="footer-links" aria-label="Footer navigation">
+          <div class="footer-col">
+            <h3 class="footer-col-title">TUNE IN</h3>
+            <a href="#">New Drops</a>
+            <a href="#">Bestsignals</a>
+            <a href="#">Members Only</a>
+            <a href="#">Gift a Signal</a>
+          </div>
+          <div class="footer-col">
+            <h3 class="footer-col-title">THE VAULT</h3>
+            <a href="#">All Products</a>
+            <a href="#">70s</a>
+            <a href="#">80s</a>
+            <a href="#">90s</a>
+            <a href="#">00s</a>
+          </div>
+          <div class="footer-col">
+            <h3 class="footer-col-title">THE SIGNAL</h3>
+            <a href="#">Our Story</a>
+            <a href="#">Signal Archive</a>
+            <a href="#">Retro Club</a>
+            <a href="#" aria-label="Instagram hashtag">#VintaraSignal</a>
+          </div>
+          <div class="footer-col">
+            <h3 class="footer-col-title">ABOUT</h3>
+            <a href="#">Press</a>
+            <a href="#">Contact</a>
+            <a href="#">Shipping</a>
+            <a href="#">Returns</a>
+          </div>
+        </nav>
+
+      </div>
+
+      <div class="footer-bottom">
+        <p>&copy; 2026 Retro Vintara. Broadcasting from somewhere in 1987.</p>
+        <p>
+          <a href="#">Privacy</a>&nbsp;&middot;&nbsp;
+          <a href="#">Terms</a>&nbsp;&middot;&nbsp;
+          <a href="#">Cookies</a>
+        </p>
+      </div>
+
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>
